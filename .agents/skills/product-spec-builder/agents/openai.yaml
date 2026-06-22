@@ -1,0 +1,4 @@
+interface:
+  display_name: "Product Spec Builder"
+  short_description: "Build validated product specifications"
+  default_prompt: "Use $product-spec-builder to turn a product idea into a validated Product Spec."

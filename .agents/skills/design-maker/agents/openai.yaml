@@ -1,0 +1,4 @@
+interface:
+  display_name: "Design Maker"
+  short_description: "Create complete reusable product designs"
+  default_prompt: "Use $design-maker to create complete product screens in a connected design tool."

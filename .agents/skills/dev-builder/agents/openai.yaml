@@ -1,0 +1,4 @@
+interface:
+  display_name: "Development Builder"
+  short_description: "Build real features with fresh evidence"
+  default_prompt: "Use $dev-builder to implement the next approved development task with fresh verification."

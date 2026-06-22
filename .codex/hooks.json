@@ -1,0 +1,84 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$(git rev-parse --show-toplevel)/.codex/hooks/check-evolution.sh\"",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$root = git rev-parse --show-toplevel; & (Join-Path $root '.codex/hooks/check-evolution.ps1')\"",
+            "timeout": 30,
+            "statusMessage": "Checking evolution signals"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$(git rev-parse --show-toplevel)/.codex/hooks/pre-tool-shell.sh\"",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$root = git rev-parse --show-toplevel; & (Join-Path $root '.codex/hooks/pre-tool-shell.ps1')\"",
+            "timeout": 600,
+            "statusMessage": "Running commit gates"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$(git rev-parse --show-toplevel)/.codex/hooks/mark-review-needed.sh\"",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$root = git rev-parse --show-toplevel; & (Join-Path $root '.codex/hooks/mark-review-needed.ps1')\"",
+            "timeout": 30,
+            "statusMessage": "Tracking code review state"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$(git rev-parse --show-toplevel)/.codex/hooks/auto-push.sh\"",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$root = git rev-parse --show-toplevel; & (Join-Path $root '.codex/hooks/auto-push.ps1')\"",
+            "timeout": 120,
+            "statusMessage": "Checking automatic push"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$(git rev-parse --show-toplevel)/.codex/hooks/detect-feedback-signal.sh\"",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$root = git rev-parse --show-toplevel; & (Join-Path $root '.codex/hooks/detect-feedback-signal.ps1')\"",
+            "timeout": 30,
+            "statusMessage": "Checking feedback signals"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$(git rev-parse --show-toplevel)/.codex/hooks/stop-gate.sh\"",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$root = git rev-parse --show-toplevel; & (Join-Path $root '.codex/hooks/stop-gate.ps1')\"",
+            "timeout": 30,
+            "statusMessage": "Checking review gate"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bug Fixer"
+  short_description: "Fix reproducible bugs using evidence"
+  default_prompt: "Use $bug-fixer to diagnose and fix a reproducible bug with evidence."

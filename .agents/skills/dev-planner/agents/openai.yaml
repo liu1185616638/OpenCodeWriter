@@ -1,0 +1,4 @@
+interface:
+  display_name: "Development Planner"
+  short_description: "Plan verifiable development phases"
+  default_prompt: "Use $dev-planner to produce an evidence-backed phased development plan."

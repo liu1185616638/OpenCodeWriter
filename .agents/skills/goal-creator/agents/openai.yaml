@@ -1,0 +1,4 @@
+interface:
+  display_name: "Goal Creator"
+  short_description: "Create measurable autonomous goals"
+  default_prompt: "Use $goal-creator to draft a concise evidence-verifiable goal instruction."

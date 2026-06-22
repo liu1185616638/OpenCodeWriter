@@ -1,0 +1,4 @@
+interface:
+  display_name: "Skill Builder"
+  short_description: "Create approved minimal project skills"
+  default_prompt: "Use $skill-builder to create an approved minimal project skill."

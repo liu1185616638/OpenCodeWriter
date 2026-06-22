@@ -1,0 +1,4 @@
+interface:
+  display_name: "Evolution Engine"
+  short_description: "Turn feedback into approved rule changes"
+  default_prompt: "Use $evolution-engine to turn queued feedback into reviewable rule proposals."

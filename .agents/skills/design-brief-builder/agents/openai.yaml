@@ -1,0 +1,4 @@
+interface:
+  display_name: "Design Brief Builder"
+  short_description: "Create concrete product design briefs"
+  default_prompt: "Use $design-brief-builder to turn a Product Spec into concrete design decisions."

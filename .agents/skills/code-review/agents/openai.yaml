@@ -1,0 +1,4 @@
+interface:
+  display_name: "Code Review"
+  short_description: "Review correctness quality and safety"
+  default_prompt: "Use $code-review to run a two-stage evidence-based code review."
