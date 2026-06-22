@@ -8,6 +8,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+EXCLUDE_REVIEW_PREFIXES = (".codex/.state/", ".claude/hooks/", ".codex/hooks/", ".claude/agents/", ".codex/agents/")
 
 def read_payload():
     raw = sys.stdin.read().strip()
@@ -150,7 +151,10 @@ def changed_files(root):
 
 def mark_review_needed(payload):
     root = root_for(payload)
-    code = sorted(path for path in changed_files(root) if Path(path).suffix.lower() in CODE_EXTENSIONS and not path.startswith(".codex/.state/"))
+    EXCLUDE_PREFIXES = (".codex/.state/", ".claude/hooks/", ".codex/hooks/", ".claude/agents/", ".codex/agents/")
+    code = sorted(path for path in changed_files(root)
+                  if Path(path).suffix.lower() in CODE_EXTENSIONS
+                  and not any(path.startswith(p) for p in EXCLUDE_PREFIXES))
     if not code:
         emit({})
         return

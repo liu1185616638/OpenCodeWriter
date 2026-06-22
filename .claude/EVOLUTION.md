@@ -6,13 +6,13 @@
 
 ## 信号
 
-`.codex/evolution/signals.jsonl` 每行保存一条原始信号。保留原话、时间、会话和状态；不在捕获阶段解释或改写。
+`.claude/evolution/signals.jsonl` 每行保存一条原始信号。保留原话、时间、会话和状态；不在捕获阶段解释或改写。
 
 主 Agent 可补记 Hook 未捕获的明确纠正，但不得把普通偏好或一次性措辞调整伪装成通用失败模式。
 
 ## 消化
 
-会话启动发现积压时，提醒用户是否显式请求 `evolution-runner`。执行者读取信号和现有规则，输出到 `.codex/evolution/proposals.md`：
+会话启动发现积压时，提醒用户是否显式请求 `evolution-runner`。执行者读取信号和现有规则，输出到 `.claude/evolution/proposals.md`：
 
 - 合并同一根因的重复信号。
 - 指明目标文件和精确改动。

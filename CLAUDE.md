@@ -23,7 +23,7 @@
 
 按以下顺序检查，不凭会话记忆判断进度：
 
-1. 检查 `.codex/evolution/signals.jsonl` 是否有未处理信号；有则提醒用户可运行 `evolution-engine`，不要自动修改规则。
+1. 检查 `.claude/evolution/signals.jsonl` 是否有未处理信号；有则提醒用户可运行 `evolution-engine`，不要自动修改规则。
 2. 检查 `Product-Spec.md`：不存在且用户描述产品想法时，使用 `product-spec-builder`。
 3. 检查 `Design-Brief.md`：需求已确认且产品需要界面时，询问是否使用 `design-brief-builder`。
 4. 检查设计稿：用户要求设计图且设计 MCP 可用时，使用 `design-maker`。
@@ -50,7 +50,7 @@
 - 不共享写入状态的步骤可以并行。
 - 真正需要独立判断或干净上下文的工作，只有用户明确要求 Sub-Agent 时才显式请求。
 
-Codex 不会仅因规则文件而自动 spawn Sub-Agent。不要声称已经委派，除非当前会话确实调用并收到结果。
+claude 不会仅因规则文件而自动 spawn Sub-Agent。不要声称已经委派，除非当前会话确实调用并收到结果。
 
 执行中遵守：
 
@@ -115,7 +115,7 @@ Stage 1 有高优先级问题时不进入 Stage 2。审查失败后：
 
 只有双阶段通过，才允许进入提交或发布。
 
-双阶段 PASS 且修复后的验证也通过时，由主 Agent 删除 `.codex/.state/review-needed`。审查员保持只读，不直接清除状态；未取得双 PASS 时不得绕过该标记。
+双阶段 PASS 且修复后的验证也通过时，由主 Agent 删除 `.claude/.state/review-needed`。审查员保持只读，不直接清除状态；未取得双 PASS 时不得绕过该标记。
 
 ## 测试与完成门禁
 
@@ -142,7 +142,7 @@ Stage 1 有高优先级问题时不进入 Stage 2。审查失败后：
 
 ## 进化规则
 
-用户纠正、不满或重复返工信号写入 `.codex/evolution/signals.jsonl`。进化处理遵守 `.codex/EVOLUTION.md`：
+用户纠正、不满或重复返工信号写入 `.claude/evolution/signals.jsonl`。进化处理遵守 `.claude/EVOLUTION.md`：
 
 - 原始信号保持原文。
 - 通用规律进入规则候选；项目专属偏好不污染通用框架。

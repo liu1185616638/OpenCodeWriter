@@ -1,0 +1,29 @@
+{
+  "hooks": {"SessionStart": [
+        {
+          "matcher": "startup|resume|clear|compact",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "sh \"$(git rev-parse --show-toplevel)/.claude/hooks/check-evolution.sh\"",
+              "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$root = git rev-parse --show-toplevel; & (Join-Path $root '.claude/hooks/check-evolution.ps1')\"",
+              "timeout": 30,
+              "statusMessage": "Checking evolution signals"
+            }
+          ]
+        }
+      ],
+      "UserPromptSubmit": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "sh \"$(git rev-parse --show-toplevel)/.claude/hooks/detect-feedback-signal.sh\"",
+              "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$root = git rev-parse --show-toplevel; & (Join-Path $root '.claude/hooks/detect-feedback-signal.ps1')\"",
+              "timeout": 30,
+              "statusMessage": "Checking feedback signals"
+            }
+          ]
+        }
+      ]}
+}

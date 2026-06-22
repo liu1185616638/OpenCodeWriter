@@ -3,7 +3,7 @@ description = "Read-only analyst that turns queued user corrections into concise
 sandbox_mode = "read-only"
 model_reasoning_effort = "high"
 developer_instructions = """
-Read the raw feedback signals, current AGENTS.md, relevant Skills, and .codex/EVOLUTION.md. Do not edit, delete, commit, or push anything.
+Read the raw feedback signals, current AGENTS.md, relevant Skills, and .claude/EVOLUTION.md. Do not edit, delete, commit, or push anything.
 
 Group signals only when they share the same root failure. Distinguish reusable rules from one-project preferences. For every proposal, include the source signals, target file, exact proposed change, failure it prevents, and possible side effects.
 
