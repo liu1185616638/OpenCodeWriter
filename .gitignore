@@ -1,5 +1,13 @@
 .codex/.state/
+.claude/.state/
 .worktrees/
 __pycache__/
 *.pyc
 .codex/
+.claude/
+.agents/
+node_modules/
+dist/
+.opencode-writer/
+bun.lock
+opencode-writer.exe

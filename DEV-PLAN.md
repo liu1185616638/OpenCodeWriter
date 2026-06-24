@@ -7,7 +7,7 @@
 | 运行时 | bun >= 1.3.0 | OpenTUI `@opentui/core` 的 engines 要求 |
 | UI 框架 | `@opentui/core` 0.4.x | 提供 Box/Text/Input/Textarea/Select/ScrollBox/TabSelect/EditBuffer 等组件，原生 Zig 渲染，支持 themeMode 暗色/亮色切换 |
 | 语言 | TypeScript 5.x | OpenTUI 提供 TypeScript 类型定义 |
-| 数据库 | better-sqlite3 | 纯 C 绑定的 SQLite，同步 API 适合 TUI 单线程模型，bun 兼容 |
+| 数据库 | bun:sqlite | bun 内置 SQLite 绑定，同步 API，better-sqlite3 在 bun 1.3 下不兼容（ERR_DLOPEN_FAILED），改用 bun:sqlite |
 | AI 调用 | OpenAI SDK (`openai`) npm 包 | 官方维护，支持 OpenAI 兼容 API（baseURL 可配置），streaming 支持 |
 | 构建 | bun 原生 TypeScript 执行 | 无需编译步骤，`bun src/index.ts` 直接运行 |
 | 测试 | bun:test | bun 内置测试框架，零配置 |
@@ -214,10 +214,11 @@ Phase 9: 设置 + 主题切换 + 打磨
 ```json
 {
   "@opentui/core": "^0.4.0",
-  "better-sqlite3": "^11.0.0",
   "openai": "^4.0.0"
 }
 ```
+
+> 注：better-sqlite3 在 bun 下不兼容，改用 `bun:sqlite`（bun 内置，无需安装）。
 
 ### 验证命令
 
@@ -229,9 +230,9 @@ bun test               # 空测试套件通过
 
 ### 门禁
 
-- [ ] 编译/启动无错误
-- [ ] TUI 空白窗口可见
-- [ ] SQLite 连接测试通过
+- [x] 编译/启动无错误
+- [x] TUI 空白窗口可见
+- [x] SQLite 连接测试通过（bun:sqlite 替代 better-sqlite3）
 - [ ] 两阶段代码审查通过
 
 ---
@@ -262,9 +263,9 @@ bun test               # 所有 service + AI 客户端测试通过
 
 ### 门禁
 
-- [ ] 所有 service 单元测试通过
-- [ ] AI 客户端 streaming 调用实测通过
-- [ ] context-builder 各阶段注入逻辑验证
+- [x] 所有 service 单元测试通过（39 tests, 81 assertions）
+- [ ] AI 客户端 streaming 调用实测通过（需真实 API Key，Phase 2 配置向导后验证）
+- [x] context-builder 各阶段注入逻辑验证
 - [ ] 两阶段代码审查通过
 
 ---
