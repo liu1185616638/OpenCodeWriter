@@ -58,6 +58,8 @@ const staleTargetMap: Record<CreationStage, string> = {
 
 type StageStatus = "done" | "active" | "ready" | "pending" | "stale";
 
+const collapsedGroupClass = "group-data-[collapsible=icon]:p-0";
+
 function StageIcon({ status }: { status: StageStatus }) {
   switch (status) {
     case "done":
@@ -78,8 +80,8 @@ function SidebarBrand() {
   const { toggleSidebar } = useSidebar();
 
   return (
-    <SidebarHeader className="flex flex-row items-center gap-2 px-4 py-4" data-tauri-drag-region>
-      <div className="flex min-w-0 flex-1 items-center gap-2 pointer-events-none">
+    <SidebarHeader className="flex flex-row items-center gap-2 px-4 py-4 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-2" data-tauri-drag-region>
+      <div className="flex min-w-0 flex-1 items-center gap-2 pointer-events-none group-data-[collapsible=icon]:flex-none">
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-primary shadow-sm">
           <BookIcon className="h-4 w-4 text-primary-foreground" />
         </div>
@@ -116,7 +118,7 @@ function SidebarNavButton({
 }) {
   return (
     <button
-      className={`flex h-11 w-full min-w-0 items-center gap-3 rounded-2xl px-3 text-sm font-medium transition-colors group-data-[collapsible=icon]:h-10 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0 ${
+      className={`flex h-11 w-full min-w-0 items-center gap-3 rounded-2xl px-3 text-sm font-medium transition-colors group-data-[collapsible=icon]:h-10 group-data-[collapsible=icon]:w-10 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0 ${
         active
           ? "bg-sidebar-accent text-sidebar-accent-foreground"
           : "text-sidebar-accent-foreground hover:bg-sidebar-accent/60"
@@ -280,10 +282,10 @@ export function AppSidebar({
       <Sidebar collapsible="icon" className="rounded-xl border border-sidebar-border shadow-lg">
         <SidebarBrand />
 
-        <SidebarContent className="overflow-hidden px-3">
+        <SidebarContent className="overflow-hidden px-3 group-data-[collapsible=icon]:px-1">
           <ScrollArea className="h-full">
-            <div className="space-y-2 py-2 pr-1">
-              <SidebarGroup>
+            <div className="space-y-2 py-2 pr-1 group-data-[collapsible=icon]:pr-0">
+              <SidebarGroup className={collapsedGroupClass}>
                 <SidebarGroupContent>
                   <SidebarMenu>
                     <SidebarMenuItem>
@@ -293,7 +295,7 @@ export function AppSidebar({
                 </SidebarGroupContent>
               </SidebarGroup>
 
-              <SidebarGroup>
+              <SidebarGroup className={collapsedGroupClass}>
                 <SidebarGroupLabel className="px-2 py-1 text-xs text-sidebar-foreground">设置</SidebarGroupLabel>
                 <SidebarGroupContent>
                   <SidebarMenu>
@@ -331,17 +333,17 @@ export function AppSidebar({
     <Sidebar collapsible="icon" className="rounded-xl border border-sidebar-border shadow-lg">
       <SidebarBrand />
 
-      <SidebarContent className="overflow-hidden px-3">
+      <SidebarContent className="overflow-hidden px-3 group-data-[collapsible=icon]:px-1">
         <ScrollArea className="h-full">
-          <div className="space-y-2 py-2 pr-1">
+          <div className="space-y-2 py-2 pr-1 group-data-[collapsible=icon]:pr-0">
             {currentProject && (
-              <SidebarGroup>
+              <SidebarGroup className={collapsedGroupClass}>
                 <SidebarGroupLabel className="px-2 py-1 text-xs text-sidebar-foreground">项目</SidebarGroupLabel>
                 <SidebarGroupContent>
                   <SidebarMenu>
                     <SidebarMenuItem>
                       <div
-                        className="flex h-11 w-full min-w-0 items-center gap-3 rounded-2xl bg-sidebar-accent px-3 text-sm font-medium text-sidebar-accent-foreground group-data-[collapsible=icon]:h-10 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
+                        className="flex h-11 w-full min-w-0 items-center gap-3 rounded-2xl bg-sidebar-accent px-3 text-sm font-medium text-sidebar-accent-foreground group-data-[collapsible=icon]:h-10 group-data-[collapsible=icon]:w-10 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
                         title={currentProject.name}
                       >
                         <BookIcon className="h-5 w-5 shrink-0" />
@@ -354,7 +356,7 @@ export function AppSidebar({
             )}
 
             {!currentProject && (
-              <SidebarGroup>
+              <SidebarGroup className={collapsedGroupClass}>
                 <SidebarGroupLabel className="px-2 py-1 text-xs text-sidebar-foreground">项目列表</SidebarGroupLabel>
                 <SidebarGroupContent>
                   <SidebarMenu>
@@ -372,7 +374,7 @@ export function AppSidebar({
             )}
 
             {currentProject && (
-              <SidebarGroup>
+              <SidebarGroup className={collapsedGroupClass}>
                 <SidebarGroupLabel className="px-2 py-1 text-xs text-sidebar-foreground">创作阶段</SidebarGroupLabel>
                 <SidebarGroupContent>
                   <SidebarMenu>
