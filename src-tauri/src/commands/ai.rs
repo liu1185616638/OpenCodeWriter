@@ -165,6 +165,65 @@ fn get_style_config(
     .map_err(|e| e.to_string())
 }
 
+/// Get content text for a chapter (for polish_content)
+fn get_content_text(state: &State<'_, DbState>, chapter_id: i64) -> Result<String, String> {
+    let conn = get_conn(state)?;
+    conn.query_row(
+        "SELECT content FROM contents WHERE chapter_id = ?1",
+        params![chapter_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+    .and_then(|opt| opt.ok_or_else(|| "该章节暂无正文内容".to_string()))
+}
+
+/// Get preset from AppHandle (for use after State has been dropped)
+fn get_preset_from_app(app: &AppHandle, preset_id: i64) -> Result<ModelPreset, String> {
+    let state = app.state::<DbState>();
+    get_preset(&state, preset_id)
+}
+
+/// Update chapters with polished title/summary from AI response
+fn update_polished_chapters(
+    state: &State<'_, DbState>,
+    project_id: i64,
+    content: &str,
+) -> Result<usize, String> {
+    let cleaned = strip_thinking_tags(content);
+    let json_text = cleaned
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+
+    let response: ChaptersResponse = serde_json::from_str(json_text)
+        .map_err(|e| format!("章节 JSON 解析失败: {}", e))?;
+
+    let conn = get_conn(state)?;
+    let mut updated = 0;
+
+    for ch in &response.chapters {
+        if ch.title.trim().is_empty() {
+            continue;
+        }
+
+        // Update by chapter_number + project_id
+        let rows = conn.execute(
+            "UPDATE chapters SET title = ?1, summary = ?2, updated_at = datetime('now') \
+             WHERE project_id = ?3 AND chapter_number = ?4",
+            params![ch.title.trim(), ch.summary.trim(), project_id, ch.chapter_number],
+        )
+        .map_err(|e| format!("更新章节失败: {}", e))?;
+
+        if rows > 0 {
+            updated += rows as usize;
+        }
+    }
+
+    Ok(updated)
+}
+
 async fn stream_and_emit(
     client: &AiClient,
     messages: Vec<ChatMessage>,
@@ -496,6 +555,85 @@ pub async fn generate_characters(
     Ok(session_id)
 }
 
+/// JSON 章节数据结构，用于解析 AI 返回
+#[derive(Debug, Deserialize)]
+struct ChapterJson {
+    chapter_number: i64,
+    title: String,
+    summary: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChaptersResponse {
+    chapters: Vec<ChapterJson>,
+}
+
+/// Parse AI-returned JSON chapters and insert into database
+fn save_generated_chapters(
+    state: &State<'_, DbState>,
+    project_id: i64,
+    content: &str,
+) -> Result<usize, String> {
+    let cleaned = strip_thinking_tags(content);
+    let json_text = cleaned
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+
+    let response: ChaptersResponse = serde_json::from_str(json_text)
+        .map_err(|e| format!("章节 JSON 解析失败: {}", e))?;
+
+    let conn = get_conn(state)?;
+    let mut saved = 0;
+
+    for ch in &response.chapters {
+        // Skip entries with empty titles
+        if ch.title.trim().is_empty() {
+            continue;
+        }
+
+        // Check if chapter with same number already exists
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM chapters WHERE project_id = ?1 AND chapter_number = ?2",
+                params![project_id, ch.chapter_number],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+
+        if exists {
+            continue; // Skip duplicates
+        }
+
+        // Auto sort_order: use MAX + 1
+        let max_sort: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(sort_order), -1) FROM chapters WHERE project_id = ?1",
+                params![project_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+
+        conn.execute(
+            "INSERT INTO chapters (project_id, chapter_number, title, summary, sort_order) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                project_id,
+                ch.chapter_number,
+                ch.title.trim(),
+                ch.summary.trim(),
+                max_sort + 1,
+            ],
+        )
+        .map_err(|e| format!("插入章节失败: {}", e))?;
+
+        saved += 1;
+    }
+
+    Ok(saved)
+}
+
 #[tauri::command]
 pub async fn generate_chapters(
     project_id: i64,
@@ -513,7 +651,12 @@ pub async fn generate_chapters(
     let messages = builder.build_chapters_context(&outline_content, &characters_summary);
     let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name);
 
-    stream_and_emit(&client, messages, &app, &session_id).await?;
+    let content = stream_and_emit(&client, messages, &app, &session_id).await?;
+
+    // Parse JSON and insert chapters into database
+    let db_state = app.state::<DbState>();
+    let count = save_generated_chapters(&db_state, project_id, &content)?;
+    eprintln!("[generate_chapters] saved {} chapters", count);
 
     Ok(session_id)
 }
@@ -547,6 +690,115 @@ pub async fn generate_content(
     let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name);
 
     stream_and_emit(&client, messages, &app, &session_id).await?;
+
+    Ok(session_id)
+}
+
+#[tauri::command]
+pub async fn generate_character_from_description(
+    project_id: i64,
+    preset_id: i64,
+    description: String,
+    tier: String,
+    session_id: String,
+    app: AppHandle,
+    state: State<'_, DbState>,
+) -> Result<String, String> {
+    let outline_content = get_outline_content(&state, project_id)?;
+    let preset = get_preset(&state, preset_id)?;
+    drop(state);
+
+    let builder = ContextBuilder::new();
+    let messages = builder.build_character_from_description_context(&outline_content, &description, &tier);
+    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name);
+
+    let content = stream_and_emit(&client, messages, &app, &session_id).await?;
+
+    // Parse JSON and insert character into database
+    let db_state = app.state::<DbState>();
+    let count = save_generated_characters(&db_state, project_id, &content)?;
+    eprintln!("[generate_character_from_description] saved {} character(s)", count);
+
+    Ok(session_id)
+}
+
+#[tauri::command]
+pub async fn polish_content(
+    project_id: i64,
+    chapter_id: i64,
+    preset_id: i64,
+    session_id: String,
+    app: AppHandle,
+    state: State<'_, DbState>,
+) -> Result<String, String> {
+    let outline_content = get_outline_content(&state, project_id)?;
+    let characters_summary = get_characters_summary(&state, project_id)?;
+    let (chapter_title, chapter_summary, _) = get_chapter_info(&state, chapter_id)?;
+    let style_config = get_style_config(&state, project_id)?;
+    let original_content = get_content_text(&state, chapter_id)?;
+    let preset = get_preset(&state, preset_id)?;
+    drop(state);
+
+    let builder = ContextBuilder::new();
+    let messages = builder.build_polish_content_context(
+        &outline_content,
+        &characters_summary,
+        &chapter_title,
+        &chapter_summary,
+        &original_content,
+        style_config.as_ref(),
+    );
+    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name);
+
+    stream_and_emit(&client, messages, &app, &session_id).await?;
+
+    Ok(session_id)
+}
+
+#[tauri::command]
+pub async fn polish_chapter(
+    project_id: i64,
+    preset_id: i64,
+    session_id: String,
+    app: AppHandle,
+    state: State<'_, DbState>,
+) -> Result<String, String> {
+    let outline_content = get_outline_content(&state, project_id)?;
+    let characters_summary = get_characters_summary(&state, project_id)?;
+
+    // Build original chapters summary from database
+    let chapters: Vec<(i64, String, String)> = {
+        let conn = get_conn(&state)?;
+        let mut stmt = conn
+            .prepare("SELECT chapter_number, title, summary FROM chapters WHERE project_id = ?1 ORDER BY sort_order")
+            .map_err(|e| e.to_string())?;
+        let result = stmt
+            .query_map(params![project_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        result
+    };
+    drop(state);
+
+    let original_chapters = chapters
+        .iter()
+        .map(|(num, title, summary)| format!("第{}章 {} —— {}", num, title, summary))
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    let preset = get_preset_from_app(&app, preset_id)?;
+
+    let builder = ContextBuilder::new();
+    let messages = builder.build_polish_chapter_context(&outline_content, &characters_summary, &original_chapters);
+    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name);
+
+    let content = stream_and_emit(&client, messages, &app, &session_id).await?;
+
+    // Parse JSON and update chapters in database
+    let db_state = app.state::<DbState>();
+    let count = update_polished_chapters(&db_state, project_id, &content)?;
+    eprintln!("[polish_chapter] updated {} chapters", count);
 
     Ok(session_id)
 }

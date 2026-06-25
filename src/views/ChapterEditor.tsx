@@ -13,9 +13,10 @@ import { useAI } from "@/contexts/AIContext";
 import { useAppEvents } from "@/hooks/useAppEvents";
 import { reorderChapters } from "@/lib/tauri";
 import { StaleAlert } from "@/components/shared/StaleAlert";
+import { StreamingView } from "@/components/shared/StreamingView";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import type { Project } from "@/types";
-import { Trash2, Plus, Sparkles, Square, GripVertical, Cpu, Loader2 } from "lucide-react";
+import { Trash2, Plus, Sparkles, Square, GripVertical, Cpu, Loader2, WandSparkles } from "lucide-react";
 import { toast } from "sonner";
 
 export function ChapterEditor({ project }: { project: Project }) {
@@ -23,8 +24,7 @@ export function ChapterEditor({ project }: { project: Project }) {
   const { outline, load: loadOutline } = useOutline(project.id);
   const { characters, load: loadCharacters } = useCharacters(project.id);
   const { currentPreset, currentPresetId, switchPreset, presets } = useSettings();
-  const { generating, error, generate, cancel } = useAI();
-  // thinkingContent available but not used for non-text editors
+  const { generating, streamedContent, thinkingContent, generatingStage, error, generate, cancel } = useAI();
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editSummary, setEditSummary] = useState("");
@@ -83,6 +83,25 @@ export function ChapterEditor({ project }: { project: Project }) {
       },
       onError: (err) => {
         toast.error("生成失败", { description: err });
+      },
+    });
+  }, [currentPreset, generate, project.id, load]);
+
+  const handlePolish = useCallback(async () => {
+    if (!currentPreset) return;
+    await generate({
+      command: "polish_chapter",
+      stage: "chapters",
+      args: {
+        projectId: project.id,
+        presetId: currentPreset.id,
+      },
+      onComplete: () => {
+        load();
+        toast.success("章节目录已润色");
+      },
+      onError: (err) => {
+        toast.error("润色失败", { description: err });
       },
     });
   }, [currentPreset, generate, project.id, load]);
@@ -192,10 +211,16 @@ export function ChapterEditor({ project }: { project: Project }) {
           </div>
         </ScrollArea>
 
-        {/* Edit selected chapter */}
+        {/* Edit selected chapter / Streaming view during generation */}
         <ScrollArea className="min-w-0 flex-1 px-4 py-5 sm:px-8">
           <div className="min-h-full w-full min-w-0 space-y-3 pr-2 sm:pr-3">
-            {selectedChapter ? (
+            {generating && generatingStage === "chapters" ? (
+              <StreamingView
+                content={streamedContent}
+                thinkingContent={thinkingContent}
+                generating={generating}
+              />
+            ) : selectedChapter ? (
               <>
                 <Input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} placeholder="章节标题" className="text-base" />
                 <Textarea value={editSummary} onChange={(e) => setEditSummary(e.target.value)} placeholder="章节摘要" className="app-scrollbar min-h-[220px] resize-y overflow-y-auto bg-background border-border" />
@@ -227,10 +252,21 @@ export function ChapterEditor({ project }: { project: Project }) {
             <Square className="h-4 w-4" />停止生成
           </Button>
         ) : (
-          <Button onClick={handleGenerate} disabled={!currentPreset || upstreamIncomplete} className="rounded-full px-4 py-2.5 gap-1.5">
-            <Sparkles className="h-4 w-4" />
-            AI 生成目录
-          </Button>
+          <>
+            <Button onClick={handleGenerate} disabled={!currentPreset || upstreamIncomplete} className="rounded-full px-4 py-2.5 gap-1.5">
+              <Sparkles className="h-4 w-4" />
+              AI 生成目录
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handlePolish}
+              disabled={!currentPreset || chapters.length === 0}
+              className="rounded-full px-4 py-2.5 gap-1.5"
+            >
+              <WandSparkles className="h-4 w-4" />
+              润色打磨
+            </Button>
+          </>
         )}
         <div className="inline-flex h-10 min-w-0 max-w-full shrink-0 items-center gap-2 rounded-full bg-secondary px-4 text-sm text-secondary-foreground">
           <Cpu className="h-4 w-4 shrink-0" />

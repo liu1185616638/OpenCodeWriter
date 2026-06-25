@@ -23,7 +23,7 @@ export function ContentEditor({ project }: { project: Project }) {
   const [selectedChapterId, setSelectedChapterId] = useState<number | null>(null);
   const { content, saving, load: loadContent, save } = useContent(selectedChapterId ?? 0);
   const { currentPreset, currentPresetId, switchPreset, presets } = useSettings();
-  const { generating, streamedContent, thinkingContent, error, generate, cancel } = useAI();
+  const { generating, streamedContent, thinkingContent, generatingStage, error, generate, cancel } = useAI();
   const [text, setText] = useState("");
 
   const stopwords = useStopwords(text);
@@ -33,29 +33,37 @@ export function ContentEditor({ project }: { project: Project }) {
   useEffect(() => { loadChapters(); }, [loadChapters]);
 
   useEffect(() => {
-    if (selectedChapterId) loadContent();
+    if (selectedChapterId) {
+      loadContent();
+    } else {
+      setText("");
+    }
   }, [selectedChapterId, loadContent]);
 
   useEffect(() => {
-    if (content) setText(content.content);
+    if (content) {
+      setText(content.content);
+    } else {
+      setText("");
+    }
   }, [content]);
 
   useEffect(() => {
-    if (generating) {
+    // During content generation: sync streamed text for live display
+    // After generation ends: auto-save effect handles saving + reload
+    if (generating && generatingStage === "content") {
       setText(streamedContent);
-    } else if (streamedContent) {
-      setText(stripThinking(streamedContent));
     }
-  }, [streamedContent, generating]);
+  }, [streamedContent, generating, generatingStage]);
 
   // Auto-save when generation finishes
   const prevGeneratingRef = useRef(false);
   useEffect(() => {
     if (prevGeneratingRef.current && !generating && selectedChapterId) {
-      // Use a timeout to ensure streamedContent state has fully settled
       const timer = setTimeout(() => {
         if (streamedContent) {
           const cleaned = stripThinking(streamedContent);
+          setText(cleaned);
           save(project.id, cleaned).then(() => {
             toast.success("正文已自动保存");
           }).catch(() => {
@@ -90,6 +98,25 @@ export function ContentEditor({ project }: { project: Project }) {
       },
       onError: (err) => {
         toast.error("生成失败", { description: err });
+      },
+    });
+  }, [currentPreset, selectedChapterId, generate, project.id]);
+
+  const handlePolish = useCallback(async () => {
+    if (!currentPreset || !selectedChapterId) return;
+    await generate({
+      command: "polish_content",
+      stage: "content",
+      args: {
+        projectId: project.id,
+        chapterId: selectedChapterId,
+        presetId: currentPreset.id,
+      },
+      onComplete: () => {
+        // Auto-save effect handles save + toast
+      },
+      onError: (err) => {
+        toast.error("润色失败", { description: err });
       },
     });
   }, [currentPreset, selectedChapterId, generate, project.id]);
@@ -248,14 +275,17 @@ export function ContentEditor({ project }: { project: Project }) {
           </Select>
         </div>
 
-        <Button
-          variant="outline"
-          className="rounded-full px-4 py-2.5 gap-1.5"
-          disabled
-        >
-          <WandSparkles className="h-4 w-4" />
-          润色打磨
-        </Button>
+        {generating ? null : (
+          <Button
+            variant="outline"
+            onClick={handlePolish}
+            disabled={!currentPreset || !selectedChapterId || !text.trim()}
+            className="rounded-full px-4 py-2.5 gap-1.5"
+          >
+            <WandSparkles className="h-4 w-4" />
+            润色打磨
+          </Button>
+        )}
 
         <Button
           variant="outline"
@@ -264,7 +294,7 @@ export function ContentEditor({ project }: { project: Project }) {
           className="rounded-full px-4 py-2.5 gap-1.5"
         >
           <Save className="h-4 w-4" />
-          Ctrl+S
+          保存
         </Button>
       </div>
     </div>

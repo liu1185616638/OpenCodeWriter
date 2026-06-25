@@ -16,7 +16,7 @@ import { toast } from "sonner";
 export function OutlineEditor({ project }: { project: Project }) {
   const { outline, loading, saving, load, save } = useOutline(project.id);
   const { currentPreset, currentPresetId, switchPreset, presets } = useSettings();
-  const { generating, streamedContent, thinkingContent, error, generate, cancel } = useAI();
+  const { generating, streamedContent, thinkingContent, generatingStage, error, generate, cancel } = useAI();
   const [content, setContent] = useState("");
 
   useEffect(() => { load(); }, [load]);
@@ -26,14 +26,13 @@ export function OutlineEditor({ project }: { project: Project }) {
   }, [outline]);
 
   // 生成中：更新 content 以驱动 StreamingView
-  // 生成结束：streamedContent 可能含 <thinking> 标签，先清洗
+  // 只在 generatingStage === "outline" 且 generating 时同步流式内容
+  // 生成结束：自动保存 effect 处理保存 + reload
   useEffect(() => {
-    if (generating) {
+    if (generating && generatingStage === "outline") {
       setContent(streamedContent);
-    } else if (streamedContent) {
-      setContent(stripThinking(streamedContent));
     }
-  }, [streamedContent, generating]);
+  }, [streamedContent, generating, generatingStage]);
 
   const handleSave = useCallback(async () => {
     await save(content);
@@ -61,13 +60,11 @@ export function OutlineEditor({ project }: { project: Project }) {
   // Auto-save when generation finishes
   const prevGeneratingRef = useRef(false);
   useEffect(() => {
-    // Detect transition from generating=true to generating=false
     if (prevGeneratingRef.current && !generating) {
-      // Use a timeout to ensure streamedContent state has fully settled
-      // after the batch of ai-chunk + ai-done updates
       const timer = setTimeout(() => {
         if (streamedContent) {
           const cleaned = stripThinking(streamedContent);
+          setContent(cleaned);
           save(cleaned).then(() => {
             toast.success("大纲已自动保存");
           }).catch(() => {
@@ -182,7 +179,7 @@ export function OutlineEditor({ project }: { project: Project }) {
           className="rounded-full px-4 py-2.5 gap-1.5"
         >
           <Save className="h-4 w-4" />
-          Ctrl+S
+          保存
         </Button>
       </div>
     </div>

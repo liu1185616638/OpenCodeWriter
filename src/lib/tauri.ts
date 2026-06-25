@@ -169,3 +169,15 @@ export async function generateChapters(projectId: number, presetId: number, sess
 export async function generateContent(projectId: number, chapterId: number, presetId: number, sessionId: string): Promise<string> {
   return invoke("generate_content", { projectId, chapterId, presetId, sessionId });
 }
+
+export async function generateCharacterFromDescription(projectId: number, presetId: number, description: string, tier: string, sessionId: string): Promise<string> {
+  return invoke("generate_character_from_description", { projectId, presetId, description, tier, sessionId });
+}
+
+export async function polishContent(projectId: number, chapterId: number, presetId: number, sessionId: string): Promise<string> {
+  return invoke("polish_content", { projectId, chapterId, presetId, sessionId });
+}
+
+export async function polishChapter(projectId: number, presetId: number, sessionId: string): Promise<string> {
+  return invoke("polish_chapter", { projectId, presetId, sessionId });
+}

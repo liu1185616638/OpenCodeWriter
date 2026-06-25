@@ -193,13 +193,23 @@ export function CharacterEditor({ project }: { project: Project }) {
 
   const handleGenerateFromDescription = useCallback(async () => {
     if (!currentPreset || !newDescription.trim()) return;
-    await generate("generate_character_from_description", {
-      projectId: project.id,
-      presetId: currentPreset.id,
-      description: newDescription.trim(),
-      tier: newTier,
+    await generate({
+      command: "generate_character_from_description",
+      stage: "characters",
+      args: {
+        projectId: project.id,
+        presetId: currentPreset.id,
+        description: newDescription.trim(),
+        tier: newTier,
+      },
+      onComplete: () => {
+        load();
+        toast.success("人物已生成并保存");
+      },
+      onError: (err) => {
+        toast.error("生成失败", { description: err });
+      },
     });
-    load();
     setNewDescription("");
     setShowAddDialog(false);
   }, [currentPreset, generate, project.id, newDescription, newTier, load]);
@@ -360,11 +370,11 @@ export function CharacterEditor({ project }: { project: Project }) {
             <Button variant="outline" onClick={() => setShowAddDialog(false)} className="rounded-full">取消</Button>
             <Button
               onClick={handleGenerateFromDescription}
-              disabled
+              disabled={!currentPreset || !newDescription.trim()}
               className="rounded-full gap-1.5"
             >
               <Sparkles className="h-4 w-4" />
-              AI 生成（暂未开放）
+              AI 生成
             </Button>
           </DialogFooter>
         </DialogContent>

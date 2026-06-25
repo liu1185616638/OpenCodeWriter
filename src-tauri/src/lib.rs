@@ -63,6 +63,9 @@ pub fn run() {
             commands::ai::generate_characters,
             commands::ai::generate_chapters,
             commands::ai::generate_content,
+            commands::ai::generate_character_from_description,
+            commands::ai::polish_content,
+            commands::ai::polish_chapter,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
