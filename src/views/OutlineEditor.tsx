@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useOutline } from "@/hooks/useOutline";
 import { useSettings } from "@/hooks/useSettings";
@@ -91,16 +92,16 @@ export function OutlineEditor({ project }: { project: Project }) {
     },
   });
 
-  if (loading) return <div className="text-muted-foreground">加载中...</div>;
+  if (loading) return <div className="p-6 text-muted-foreground">加载中...</div>;
 
   const saved = !saving && outline?.content === content;
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
       {/* Editor Header */}
-      <div className="flex items-center justify-between px-6 py-4">
-        <h2 className="text-lg font-semibold text-foreground">大纲</h2>
-        <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
+      <div className="flex shrink-0 items-center justify-between gap-3 px-4 py-4 sm:px-6">
+        <h2 className="truncate text-lg font-semibold text-foreground">大纲</h2>
+        <span className="flex shrink-0 items-center gap-1.5 text-sm text-muted-foreground">
           {generating ? (
             <>
               <Loader2 className="h-3.5 w-3.5 text-primary animate-spin" />
@@ -114,29 +115,31 @@ export function OutlineEditor({ project }: { project: Project }) {
       <StaleAlert projectId={project.id} targetType="outline" />
 
       {/* Editor Area — streaming view when generating, textarea otherwise */}
-      <div className="flex-1 px-8 py-5 overflow-auto min-h-0">
-        {generating ? (
-          <StreamingView
-            content={content}
-            thinkingContent={thinkingContent}
-            generating={generating}
-          />
-        ) : (
-          <Textarea
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            className="flex-1 min-h-[400px] resize-none bg-background border-none shadow-none focus-visible:ring-0 text-base leading-relaxed"
-            placeholder="在此编写大纲，或点击 AI 生成..."
-          />
-        )}
-      </div>
+      <ScrollArea className="min-h-0 min-w-0 flex-1 px-4 py-4 sm:px-8 sm:py-5">
+        <div className="min-h-full w-full min-w-0 pr-2 sm:pr-3">
+          {generating ? (
+            <StreamingView
+              content={content}
+              thinkingContent={thinkingContent}
+              generating={generating}
+            />
+          ) : (
+            <Textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              className="app-scrollbar min-h-[400px] w-full resize-none overflow-y-auto bg-background border-none shadow-none focus-visible:ring-0 text-base leading-relaxed"
+              placeholder="在此编写大纲，或点击 AI 生成..."
+            />
+          )}
+        </div>
+      </ScrollArea>
 
       {error && (
-        <p className="text-sm text-destructive px-8">{error}</p>
+        <p className="shrink-0 px-4 text-sm text-destructive sm:px-8">{error}</p>
       )}
 
       {/* Action Bar */}
-      <div className="flex items-center gap-2 px-6 py-2">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border/60 px-4 py-3 sm:px-6">
         {generating ? (
           <Button
             variant="destructive"
@@ -156,16 +159,10 @@ export function OutlineEditor({ project }: { project: Project }) {
           </Button>
         )}
 
-        <Button
-          variant="secondary"
-          className="rounded-full px-4 py-2.5 gap-1.5"
-          onClick={() => {
-            // Select dropdown is embedded, clicking the button opens it
-          }}
-        >
-          <Cpu className="h-4 w-4" />
+        <div className="inline-flex h-10 min-w-0 max-w-full shrink-0 items-center gap-2 rounded-full bg-secondary px-4 text-sm text-secondary-foreground">
+          <Cpu className="h-4 w-4 shrink-0" />
           <Select value={String(currentPresetId ?? "")} onValueChange={(v) => switchPreset(Number(v))}>
-            <SelectTrigger className="border-0 bg-transparent p-0 h-auto w-auto focus:ring-0 text-secondary-foreground">
+            <SelectTrigger className="h-auto w-[min(240px,55vw)] border-0 bg-transparent p-0 text-secondary-foreground focus:ring-0">
               <SelectValue placeholder="选择模型" />
             </SelectTrigger>
             <SelectContent>
@@ -176,7 +173,7 @@ export function OutlineEditor({ project }: { project: Project }) {
               ))}
             </SelectContent>
           </Select>
-        </Button>
+        </div>
 
         <Button
           variant="outline"
