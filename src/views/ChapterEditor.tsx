@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useChapters } from "@/hooks/useChapters";
@@ -121,14 +122,14 @@ export function ChapterEditor({ project }: { project: Project }) {
     },
   });
 
-  if (loading) return <div className="text-muted-foreground">加载中...</div>;
+  if (loading) return <div className="p-6 text-muted-foreground">加载中...</div>;
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
       {/* Editor Header */}
-      <div className="flex items-center justify-between px-6 py-4">
-        <h2 className="text-lg font-semibold text-foreground">章节目录</h2>
-        <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
+      <div className="flex shrink-0 items-center justify-between gap-3 px-4 py-4 sm:px-6">
+        <h2 className="truncate text-lg font-semibold text-foreground">章节目录</h2>
+        <span className="flex shrink-0 items-center gap-1.5 text-sm text-muted-foreground">
           {generating ? (
             <>
               <Loader2 className="h-3.5 w-3.5 text-primary animate-spin" />
@@ -142,7 +143,7 @@ export function ChapterEditor({ project }: { project: Project }) {
       <StaleAlert projectId={project.id} targetType="chapters" onRegenerate={handleGenerate} />
 
       {upstreamIncomplete && (
-        <div className="mx-6 mb-2">
+        <div className="mx-4 mb-2 sm:mx-6">
           <Alert>
             <AlertDescription>
               {outlineEmpty ? "请先完成大纲编写" : "请先完成人物设计"}，再生成章节目录
@@ -152,64 +153,68 @@ export function ChapterEditor({ project }: { project: Project }) {
       )}
 
       {error && (
-        <div className="mx-6 mb-2 p-3 rounded-3xl bg-destructive/10">
+        <div className="mx-4 mb-2 rounded-3xl bg-destructive/10 p-3 sm:mx-6">
           <p className="text-sm text-destructive">{error}</p>
         </div>
       )}
 
       {/* Main area */}
-      <div className="flex-1 flex overflow-auto min-h-0">
+      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
         {/* Chapter list with drag reorder */}
-        <div className="w-64 shrink-0 px-4 py-5 space-y-1.5 overflow-auto border-r border-border">
-          {chapters.map((chapter) => (
-            <div
-              key={chapter.id}
-              draggable
-              onDragStart={(e) => handleDragStart(e, chapter.id)}
-              onDragOver={handleDragOver}
-              onDrop={() => handleDrop(chapter.id)}
-              onDragEnd={() => setDragId(null)}
-              className={`flex items-center gap-2 px-3 py-3 rounded-2xl cursor-pointer transition-colors ${
-                selectedId === chapter.id ? "bg-sidebar-accent" : "hover:bg-accent"
-              } ${dragId === chapter.id ? "opacity-50" : ""}`}
-              onClick={() => setSelectedId(chapter.id)}
-            >
-              <GripVertical className="h-4 w-4 text-muted-foreground shrink-0 cursor-grab" />
-              <div className="flex-1 min-w-0">
-                <div className="font-medium text-sm">第{chapter.chapter_number}章</div>
-                <div className="text-foreground text-sm truncate">{chapter.title || "未命名"}</div>
-                {chapter.summary && (
-                  <p className="text-xs text-muted-foreground mt-0.5 truncate">{chapter.summary}</p>
-                )}
+        <ScrollArea className="w-64 shrink-0 border-r border-border">
+          <div className="space-y-1.5 px-4 py-5 pr-2">
+            {chapters.map((chapter) => (
+              <div
+                key={chapter.id}
+                draggable
+                onDragStart={(e) => handleDragStart(e, chapter.id)}
+                onDragOver={handleDragOver}
+                onDrop={() => handleDrop(chapter.id)}
+                onDragEnd={() => setDragId(null)}
+                className={`flex min-w-0 items-center gap-2 rounded-2xl px-3 py-3 cursor-pointer transition-colors ${
+                  selectedId === chapter.id ? "bg-sidebar-accent" : "hover:bg-accent"
+                } ${dragId === chapter.id ? "opacity-50" : ""}`}
+                onClick={() => setSelectedId(chapter.id)}
+              >
+                <GripVertical className="h-4 w-4 text-muted-foreground shrink-0 cursor-grab" />
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium text-sm">第{chapter.chapter_number}章</div>
+                  <div className="text-foreground text-sm truncate">{chapter.title || "未命名"}</div>
+                  {chapter.summary && (
+                    <p className="text-xs text-muted-foreground mt-0.5 truncate">{chapter.summary}</p>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
-          {chapters.length === 0 && !generating && (
-            <p className="text-muted-foreground text-center py-4 text-sm">暂无章节</p>
-          )}
-        </div>
+            ))}
+            {chapters.length === 0 && !generating && (
+              <p className="text-muted-foreground text-center py-4 text-sm">暂无章节</p>
+            )}
+          </div>
+        </ScrollArea>
 
         {/* Edit selected chapter */}
-        <div className="flex-1 px-8 py-5 space-y-3 overflow-auto">
-          {selectedChapter ? (
-            <>
-              <Input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} placeholder="章节标题" className="text-base" />
-              <Textarea value={editSummary} onChange={(e) => setEditSummary(e.target.value)} placeholder="章节摘要" className="min-h-[200px] resize-none bg-background border-border" />
-              <div className="flex gap-2">
-                <Button size="sm" onClick={handleSaveSelected} className="rounded-full">保存</Button>
-                <Button size="sm" variant="destructive" className="rounded-full" onClick={() => { if (selectedId) remove(selectedId); setSelectedId(null); }}>
-                  <Trash2 className="h-3 w-3" />删除
-                </Button>
-              </div>
-            </>
-          ) : (
-            <p className="text-muted-foreground text-center py-8">选择左侧章节进行编辑</p>
-          )}
-        </div>
+        <ScrollArea className="min-w-0 flex-1 px-4 py-5 sm:px-8">
+          <div className="min-h-full w-full min-w-0 space-y-3 pr-2 sm:pr-3">
+            {selectedChapter ? (
+              <>
+                <Input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} placeholder="章节标题" className="text-base" />
+                <Textarea value={editSummary} onChange={(e) => setEditSummary(e.target.value)} placeholder="章节摘要" className="app-scrollbar min-h-[220px] resize-y overflow-y-auto bg-background border-border" />
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" onClick={handleSaveSelected} className="rounded-full">保存</Button>
+                  <Button size="sm" variant="destructive" className="rounded-full" onClick={() => { if (selectedId) remove(selectedId); setSelectedId(null); }}>
+                    <Trash2 className="h-3 w-3" />删除
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <p className="text-muted-foreground text-center py-8">选择左侧章节进行编辑</p>
+            )}
+          </div>
+        </ScrollArea>
       </div>
 
       {/* Action Bar */}
-      <div className="flex items-center gap-2 px-6 py-2">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border/60 px-4 py-3 sm:px-6">
         <Button
           variant="outline"
           onClick={() => setShowAddDialog(true)}
@@ -227,17 +232,17 @@ export function ChapterEditor({ project }: { project: Project }) {
             AI 生成目录
           </Button>
         )}
-        <Button variant="secondary" className="rounded-full px-4 py-2.5 gap-1.5">
-          <Cpu className="h-4 w-4" />
+        <div className="inline-flex h-10 min-w-0 max-w-full shrink-0 items-center gap-2 rounded-full bg-secondary px-4 text-sm text-secondary-foreground">
+          <Cpu className="h-4 w-4 shrink-0" />
           <Select value={String(currentPresetId ?? "")} onValueChange={(v) => switchPreset(Number(v))}>
-            <SelectTrigger className="border-0 bg-transparent p-0 h-auto w-auto focus:ring-0 text-secondary-foreground">
+            <SelectTrigger className="h-auto w-[min(240px,55vw)] border-0 bg-transparent p-0 text-secondary-foreground focus:ring-0">
               <SelectValue placeholder="模型 ▼" />
             </SelectTrigger>
             <SelectContent>
               {presets.map(p => <SelectItem key={p.id} value={String(p.id)}>{p.name} ({p.model_name})</SelectItem>)}
             </SelectContent>
           </Select>
-        </Button>
+        </div>
       </div>
 
       {/* New chapter dialog */}
@@ -253,7 +258,7 @@ export function ChapterEditor({ project }: { project: Project }) {
             </div>
             <div>
               <label className="text-sm text-muted-foreground">章节摘要</label>
-              <Textarea value={newSummary} onChange={(e) => setNewSummary(e.target.value)} placeholder="输入章节摘要（可选）" className="min-h-[100px]" />
+              <Textarea value={newSummary} onChange={(e) => setNewSummary(e.target.value)} placeholder="输入章节摘要（可选）" className="app-scrollbar min-h-[120px] resize-y" />
             </div>
           </div>
           <DialogFooter>
