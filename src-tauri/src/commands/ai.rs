@@ -173,17 +173,30 @@ async fn stream_and_emit(
     let mut stream = client.stream_chat(messages);
     let mut full_content = String::new();
     let mut chunk_count: u32 = 0;
+    // State machine for detecting <thinking>/皮肤病 tags in content deltas.
+    // Models that don't support the reasoning_content SSE field may output
+    // thinking text wrapped in these tags directly in the content delta.
+    let mut inside_thinking = false;
 
     while let Some(item) = stream.next().await {
         match item {
             Ok(chunk) => {
                 chunk_count += 1;
-                // Only accumulate content (not thinking) for final result
-                if chunk.chunk_type == "content" {
-                    full_content.push_str(&chunk.text);
-                }
                 eprintln!("[stream] chunk #{} type={} len={}", chunk_count, chunk.chunk_type, chunk.text.len());
-                events::emit_chunk(app, session_id, &chunk.text, &chunk.chunk_type);
+
+                if chunk.chunk_type == "content" {
+                    // Try to split <thinking>/皮肤病 tags from content deltas
+                    let parts = split_thinking_tags(&chunk.text, &mut inside_thinking);
+                    for (text, chunk_type) in parts {
+                        if chunk_type == "content" {
+                            full_content.push_str(&text);
+                        }
+                        events::emit_chunk(app, session_id, &text, &chunk_type);
+                    }
+                } else {
+                    // thinking chunks from reasoning_content field — pass through
+                    events::emit_chunk(app, session_id, &chunk.text, &chunk.chunk_type);
+                }
             }
             Err(e) => {
                 eprintln!("[stream] error after {} chunks: {}", chunk_count, e);
@@ -196,6 +209,121 @@ async fn stream_and_emit(
     eprintln!("[stream] done, {} chunks, content len={}", chunk_count, full_content.len());
     events::emit_done(app, session_id);
     Ok(full_content)
+}
+
+/// Tag pairs to detect in content deltas.
+const THINKING_TAG_PAIRS: &[(&str, &str)] = &[
+    ("<thinking>", "</thinking>"),
+    ("<think>", "</think>"),
+];
+
+/// Split a content delta into (text, chunk_type) pairs by detecting
+/// `<thinking>`/`<think>` tags. Maintains `inside_thinking` state across
+/// calls to handle tags that span delta boundaries.
+///
+/// Returns a vec of (text, "thinking"|"content") pairs. Empty strings are
+/// not emitted.
+fn split_thinking_tags(delta: &str, inside_thinking: &mut bool) -> Vec<(String, String)> {
+    let mut results = Vec::new();
+    let mut pos = 0;
+    let len = delta.len();
+
+    if *inside_thinking {
+        // Look for any closing tag
+        let mut found_close: Option<(usize, usize, &str)> = None; // (close_start, close_end, close_tag)
+        for (_, close_tag) in THINKING_TAG_PAIRS {
+            if let Some(idx) = delta.find(close_tag) {
+                match found_close {
+                    None => found_close = Some((idx, idx + close_tag.len(), *close_tag)),
+                    Some((prev_idx, _, _)) if idx < prev_idx => {
+                        found_close = Some((idx, idx + close_tag.len(), *close_tag))
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        match found_close {
+            Some((close_start, close_end, _)) => {
+                // Everything before close is thinking
+                if close_start > 0 {
+                    results.push((delta[..close_start].to_string(), "thinking".to_string()));
+                }
+                pos = close_end;
+                *inside_thinking = false;
+            }
+            None => {
+                // Still inside thinking — entire delta is thinking
+                if !delta.is_empty() {
+                    results.push((delta.to_string(), "thinking".to_string()));
+                }
+                return results;
+            }
+        }
+    }
+
+    // Outside thinking — scan for opening tags
+    while pos < len {
+        let remaining = &delta[pos..];
+
+        // Find the earliest opening tag
+        let mut found_open: Option<(usize, usize, usize, &str, &str)> = None;
+        // (open_idx_in_remaining, open_end, open_tag_len, open_tag, close_tag)
+        for (open_tag, close_tag) in THINKING_TAG_PAIRS {
+            if let Some(idx) = remaining.find(open_tag) {
+                let open_end = idx + open_tag.len();
+                match found_open {
+                    None => found_open = Some((idx, open_end, open_tag.len(), *open_tag, *close_tag)),
+                    Some((prev_idx, _, _, _, _)) if idx < prev_idx => {
+                        found_open = Some((idx, open_end, open_tag.len(), *open_tag, *close_tag))
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        match found_open {
+            Some((open_idx, open_end, _, _, close_tag)) => {
+                // Content before the opening tag
+                if open_idx > 0 {
+                    let content = remaining[..open_idx].to_string();
+                    if !content.is_empty() {
+                        results.push((content, "content".to_string()));
+                    }
+                }
+
+                // Check if closing tag is in the same remaining text
+                let after_open = &remaining[open_end..];
+                if let Some(close_idx) = after_open.find(close_tag) {
+                    // Complete thinking block within this delta
+                    let thinking = after_open[..close_idx].to_string();
+                    if !thinking.is_empty() {
+                        results.push((thinking, "thinking".to_string()));
+                    }
+                    pos += open_end + close_idx + close_tag.len();
+                    // inside_thinking stays false — continue scanning
+                } else {
+                    // Thinking continues into next delta
+                    let thinking = after_open.to_string();
+                    if !thinking.is_empty() {
+                        results.push((thinking, "thinking".to_string()));
+                    }
+                    *inside_thinking = true;
+                    break;
+                }
+            }
+            None => {
+                // No more opening tags — rest is content
+                let content = remaining.to_string();
+                if !content.is_empty() {
+                    results.push((content, "content".to_string()));
+                }
+                break;
+            }
+        }
+    }
+
+    results
 }
 
 #[tauri::command]

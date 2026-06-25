@@ -11,7 +11,7 @@ import { useAI } from "@/contexts/AIContext";
 import { useStopwords } from "@/hooks/useStopwords";
 import { useAppEvents } from "@/hooks/useAppEvents";
 import { StaleAlert } from "@/components/shared/StaleAlert";
-import { StreamingView } from "@/components/shared/StreamingView";
+import { StreamingView, stripThinking } from "@/components/shared/StreamingView";
 import { STOPWORD_SUGGESTIONS } from "@/lib/stopwords";
 import type { Project } from "@/types";
 import { Save, Sparkles, Square, Cpu, WandSparkles, Loader2 } from "lucide-react";
@@ -43,7 +43,7 @@ export function ContentEditor({ project }: { project: Project }) {
     if (generating) {
       setText(streamedContent);
     } else if (streamedContent) {
-      setText(streamedContent);
+      setText(stripThinking(streamedContent));
     }
   }, [streamedContent, generating]);
 
@@ -54,7 +54,8 @@ export function ContentEditor({ project }: { project: Project }) {
       // Use a timeout to ensure streamedContent state has fully settled
       const timer = setTimeout(() => {
         if (streamedContent) {
-          save(project.id, streamedContent).then(() => {
+          const cleaned = stripThinking(streamedContent);
+          save(project.id, cleaned).then(() => {
             toast.success("正文已自动保存");
           }).catch(() => {
             toast.error("自动保存失败");

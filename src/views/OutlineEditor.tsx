@@ -7,7 +7,7 @@ import { useSettings } from "@/hooks/useSettings";
 import { useAI } from "@/contexts/AIContext";
 import { useAppEvents } from "@/hooks/useAppEvents";
 import { StaleAlert } from "@/components/shared/StaleAlert";
-import { StreamingView } from "@/components/shared/StreamingView";
+import { StreamingView, stripThinking } from "@/components/shared/StreamingView";
 import type { Project } from "@/types";
 import { Save, Sparkles, Square, Cpu, Loader2 } from "lucide-react";
 import { toast } from "sonner";
@@ -25,12 +25,12 @@ export function OutlineEditor({ project }: { project: Project }) {
   }, [outline]);
 
   // 生成中：更新 content 以驱动 StreamingView
-  // 生成结束：streamedContent 已经不含 thinking，直接使用
+  // 生成结束：streamedContent 可能含 <thinking> 标签，先清洗
   useEffect(() => {
     if (generating) {
       setContent(streamedContent);
     } else if (streamedContent) {
-      setContent(streamedContent);
+      setContent(stripThinking(streamedContent));
     }
   }, [streamedContent, generating]);
 
@@ -66,7 +66,8 @@ export function OutlineEditor({ project }: { project: Project }) {
       // after the batch of ai-chunk + ai-done updates
       const timer = setTimeout(() => {
         if (streamedContent) {
-          save(streamedContent).then(() => {
+          const cleaned = stripThinking(streamedContent);
+          save(cleaned).then(() => {
             toast.success("大纲已自动保存");
           }).catch(() => {
             toast.error("自动保存失败");

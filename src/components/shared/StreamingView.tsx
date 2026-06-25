@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState, useMemo, useCallback } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { Streamdown } from "streamdown";
 import { ChevronDown, Brain } from "lucide-react";
 import "streamdown/styles.css";
 
 // =============================================================================
-// Thinking tag parser — fallback for models that output <thinking> tags
+// Thinking tag parser — fallback for models that output <thinking>/<think> tags
 // =============================================================================
 
 interface ParsedThinking {
@@ -13,125 +13,62 @@ interface ParsedThinking {
   isThinkingOpen: boolean;
 }
 
-function parseThinkingTags(raw: string): ParsedThinking {
-  const openTag = "<thinking>";
-  const closeTag = "</thinking>";
+const TAG_PAIRS = [
+  { open: "<thinking>", close: "</thinking>" },
+  { open: "<think>", close: "</think>" },
+];
 
-  const openIdx = raw.indexOf(openTag);
-  if (openIdx === -1) {
+/**
+ * Parse `<thinking>...</thinking>` and `<think>...</think>` tags from raw text.
+ * Matches whichever opening tag appears first. Used as fallback for models
+ * that embed thinking in content deltas instead of the `reasoning_content`
+ * SSE field.
+ */
+function parseThinkingTags(raw: string): ParsedThinking {
+  let matched: { open: string; close: string; openIdx: number } | null = null;
+
+  for (const pair of TAG_PAIRS) {
+    const openIdx = raw.indexOf(pair.open);
+    if (openIdx !== -1) {
+      if (!matched || openIdx < matched.openIdx) {
+        matched = { ...pair, openIdx };
+      }
+    }
+  }
+
+  if (!matched) {
     return { thinking: "", content: raw, isThinkingOpen: false };
   }
 
-  const afterOpen = openIdx + openTag.length;
-  const closeIdx = raw.indexOf(closeTag, afterOpen);
+  const afterOpen = matched.openIdx + matched.open.length;
+  const closeIdx = raw.indexOf(matched.close, afterOpen);
 
   if (closeIdx === -1) {
+    const beforeThinking = raw.slice(0, matched.openIdx).trim();
     return {
       thinking: raw.slice(afterOpen),
-      content: "",
+      content: beforeThinking,
       isThinkingOpen: true,
     };
   }
 
   const thinkingText = raw.slice(afterOpen, closeIdx).trim();
-  const afterClose = closeIdx + closeTag.length;
-  const contentText = raw.slice(afterClose).trimStart();
+  const beforeThinking = raw.slice(0, matched.openIdx).trim();
+  const afterThinking = raw.slice(closeIdx + matched.close.length).trimStart();
 
   return {
     thinking: thinkingText,
-    content: contentText,
+    content: [beforeThinking, afterThinking].filter(Boolean).join("\n\n"),
     isThinkingOpen: false,
   };
 }
 
 // =============================================================================
-// useTypewriter — pace out content character-by-character via RAF
-// =============================================================================
-
-/** Characters to reveal per animation frame (~16ms). Tuned for readable speed. */
-const CHARS_PER_FRAME = 6;
-
-/**
- * Accepts the full (target) content string. Returns a progressively revealed
- * substring that grows toward the target at ~CHARS_PER_FRAME characters per
- * animation frame, giving a typewriter effect regardless of how fast the
- * upstream deltas arrive.
- *
- * When generating stops, the remaining content is revealed immediately so
- * there's no lag between "done" and "fully displayed".
- */
-function useTypewriter(fullContent: string, generating: boolean): string {
-  const [displayed, setDisplayed] = useState("");
-  const fullRef = useRef(fullContent);
-  const displayedRef = useRef("");
-  const rafRef = useRef<number | null>(null);
-  const generatingRef = useRef(generating);
-
-  // Keep refs in sync
-  fullRef.current = fullContent;
-  generatingRef.current = generating;
-
-  // When generation starts fresh (content reset to ""), reset displayed
-  useEffect(() => {
-    if (fullContent === "" && displayedRef.current !== "") {
-      displayedRef.current = "";
-      setDisplayed("");
-    }
-  }, [fullContent]);
-
-  // Core pacing loop — stable reference, reads from refs
-  const tick = useCallback(() => {
-    const target = fullRef.current;
-    const current = displayedRef.current;
-
-    if (current.length < target.length) {
-      const next = target.slice(0, current.length + CHARS_PER_FRAME);
-      displayedRef.current = next;
-      setDisplayed(next);
-    }
-
-    // Continue while there's content to reveal or more may arrive
-    if (current.length < target.length || generatingRef.current) {
-      rafRef.current = requestAnimationFrame(tick);
-    } else {
-      rafRef.current = null;
-    }
-  }, []);
-
-  // Start / stop the pacing loop based on generating state
-  useEffect(() => {
-    if (generating) {
-      if (rafRef.current === null) {
-        rafRef.current = requestAnimationFrame(tick);
-      }
-    } else {
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
-      // Immediately reveal all content when generation ends
-      const target = fullRef.current;
-      if (displayedRef.current.length < target.length) {
-        displayedRef.current = target;
-        setDisplayed(target);
-      }
-    }
-  }, [generating, tick]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-      }
-    };
-  }, []);
-
-  return displayed;
-}
-
-// =============================================================================
-// StreamingView component — uses Streamdown + typewriter pacing
+// StreamingView component — uses Streamdown for incremental rendering
+//
+// SSE deltas are small (1-5 tokens each) and naturally produce a typewriter
+// effect when each delta triggers a React state update → Streamdown re-render.
+// No RAF-based typewriter pacing is needed.
 // =============================================================================
 
 interface StreamingViewProps {
@@ -143,26 +80,27 @@ interface StreamingViewProps {
 /**
  * Stream content renderer with:
  * 1. Thinking panel — auto-expanded during thinking, auto-collapsed when content arrives
- * 2. Typewriter-paced content display via useTypewriter hook
+ * 2. Direct delta-driven content display (no typewriter RAF)
  * 3. Streamdown incremental block rendering with caret
- * 4. Auto-scroll to bottom
- * 5. Fallback <thinking> tag parsing when Rust didn't separate thinking
+ * 4. Auto-scroll to bottom (both main container and thinking panel)
+ * 5. Fallback <thinking>/<think> tag parsing when Rust didn't separate thinking
  */
 export function StreamingView({ content, thinkingContent, generating }: StreamingViewProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const thinkingScrollRef = useRef<HTMLDivElement>(null);
+  const thinkingBottomRef = useRef<HTMLDivElement>(null);
   const [thinkingExpanded, setThinkingExpanded] = useState(false);
   const hasEverHadContent = useRef(false);
 
-  // When native thinkingContent is empty but content contains <thinking> tags,
-  // parse them as a fallback. This handles models that put thinking text
-  // directly in the content delta without the reasoning_content field.
+  // When native thinkingContent is empty but content contains <thinking>/<think> tags,
+  // parse them as a fallback.
   const parsed = useMemo(() => {
     if (thinkingContent) {
       // Rust already separated thinking — use as-is
       return { thinking: thinkingContent, content, isThinkingOpen: false };
     }
-    // Fallback: try to extract <thinking> tags from the content stream
+    // Fallback: try to extract thinking tags from the content stream
     return parseThinkingTags(content);
   }, [thinkingContent, content]);
 
@@ -188,12 +126,12 @@ export function StreamingView({ content, thinkingContent, generating }: Streamin
     }
   }, [parsed.content.length, thinkingExpanded]);
 
-  // Typewriter pacing — content grows smoothly regardless of delta size
-  const displayedContent = useTypewriter(parsed.content, generating);
-
+  // Direct delta-driven display — SSE chunks are already 1-5 tokens each,
+  // so Streamdown's incremental rendering gives a natural typewriter effect.
+  const displayedContent = parsed.content;
   const hasContent = displayedContent.length > 0;
 
-  // Auto-scroll to bottom
+  // Auto-scroll main container to bottom
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -202,6 +140,19 @@ export function StreamingView({ content, thinkingContent, generating }: Streamin
       bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
     }
   }, [displayedContent, parsed.thinking]);
+
+  // Auto-scroll thinking panel to bottom
+  useEffect(() => {
+    const el = thinkingScrollRef.current;
+    if (!el || !thinkingExpanded) return;
+
+    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    if (isNearBottom) {
+      requestAnimationFrame(() => {
+        thinkingBottomRef.current?.scrollIntoView({ block: "end" });
+      });
+    }
+  }, [parsed.thinking, thinkingExpanded]);
 
   // Reset state when generation session ends completely
   useEffect(() => {
@@ -243,8 +194,12 @@ export function StreamingView({ content, thinkingContent, generating }: Streamin
           </button>
 
           {thinkingExpanded && (
-            <div className="px-4 pb-3 text-sm text-muted-foreground leading-relaxed border-t border-primary/10 max-h-64 overflow-auto">
+            <div
+              ref={thinkingScrollRef}
+              className="px-4 pb-3 text-sm text-muted-foreground leading-relaxed border-t border-primary/10 max-h-64 overflow-auto"
+            >
               <Streamdown mode="static">{parsed.thinking}</Streamdown>
+              <div ref={thinkingBottomRef} />
             </div>
           )}
         </div>
@@ -258,7 +213,7 @@ export function StreamingView({ content, thinkingContent, generating }: Streamin
         </div>
       )}
 
-      {/* Main content — typewriter-paced, Streamdown streaming mode with caret */}
+      {/* Main content — direct delta-driven rendering via Streamdown */}
       {hasContent && (
         <Streamdown
           mode={generating ? "streaming" : "static"}
@@ -277,7 +232,7 @@ export function StreamingView({ content, thinkingContent, generating }: Streamin
 }
 
 /**
- * Parse thinking tags from text.
+ * Strip `<thinking>...</thinking>` and `<think>...</think>` tags from text.
  * Exported for use in editors that need to extract content without thinking.
  */
 export function stripThinking(text: string): string {
