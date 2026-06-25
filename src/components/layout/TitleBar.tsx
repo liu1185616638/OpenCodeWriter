@@ -12,6 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { PanelLeft } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const appWindow = getCurrentWindow();
@@ -20,6 +21,7 @@ export interface TitleBarActions {
   onNewProject: () => void;
   onToggleTheme: () => void;
   onToggleSidebar: () => void;
+  showSidebarToggle?: boolean;
 }
 
 export function TitleBar({ actions }: { actions: TitleBarActions }) {
@@ -83,8 +85,19 @@ export function TitleBar({ actions }: { actions: TitleBarActions }) {
     <>
       <div
         data-tauri-drag-region
-        className="h-9 flex items-center bg-background select-none shrink-0"
+        className="h-9 flex items-center bg-background select-none shrink-0 border-b border-border/40"
       >
+        {actions.showSidebarToggle && (
+          <button
+            onClick={actions.onToggleSidebar}
+            className="ml-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+            aria-label="切换侧边栏"
+            title="切换侧边栏"
+          >
+            <PanelLeft className="h-4 w-4" />
+          </button>
+        )}
+
         {/* 菜单栏 */}
         <div className="flex items-center gap-0 px-1">
           <MenuDropdown label="文件" onAction={handleAction} items={[
