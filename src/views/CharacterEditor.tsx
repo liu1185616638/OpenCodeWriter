@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -35,31 +36,28 @@ const tierColors: Record<CharacterTier, string> = {
   minor: "text-muted-foreground",
 };
 
-function hasLineBreaks(text: string): boolean {
-  return text.includes("\n");
-}
+const multilineFields = new Set(["appearance", "personality", "motivation", "relationships", "key_events"]);
 
-function SmartInput({ value, onChange, placeholder }: {
+function CharacterField({
+  fieldKey,
+  value,
+  onChange,
+  placeholder,
+}: {
+  fieldKey: string;
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
 }) {
-  const [multiline, setMultiline] = useState(hasLineBreaks(value));
+  const shouldMultiline = multilineFields.has(fieldKey) || value.length > 48 || value.includes("\n");
 
-  const handleChange = (v: string) => {
-    onChange(v);
-    if (hasLineBreaks(v)) {
-      setMultiline(true);
-    }
-  };
-
-  if (multiline) {
+  if (shouldMultiline) {
     return (
       <Textarea
         value={value}
-        onChange={(e) => handleChange(e.target.value)}
+        onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="min-h-[60px] resize-none text-sm bg-background"
+        className="app-scrollbar min-h-[76px] max-h-[240px] resize-y overflow-y-auto bg-background text-sm leading-6"
       />
     );
   }
@@ -67,9 +65,9 @@ function SmartInput({ value, onChange, placeholder }: {
   return (
     <Input
       value={value}
-      onChange={(e) => handleChange(e.target.value)}
+      onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className="text-sm bg-background"
+      className="bg-background text-sm"
     />
   );
 }
@@ -101,7 +99,6 @@ function CharacterCard({ character, onUpdate, onDelete }: {
   const tierLabel = tierLabels[character.tier as CharacterTier] || character.tier;
   const tierColor = tierColors[character.tier as CharacterTier] || "text-muted-foreground";
 
-  // Build subtitle: "身份：... | 动机：..."
   const identity = character.identity || editing.identity || "";
   const motivation = character.motivation || editing.motivation || "";
   const subtitleParts = [identity && `身份：${identity}`, motivation && `动机：${motivation}`].filter(Boolean);
@@ -113,26 +110,27 @@ function CharacterCard({ character, onUpdate, onDelete }: {
   return (
     <Collapsible open={expanded} onOpenChange={setExpanded}>
       <div className={`rounded-2xl border overflow-hidden ${isMain ? "border-border bg-card shadow-sm" : isSupporting ? "border-transparent bg-tile" : "border-transparent bg-accent"}`}>
-        <CollapsibleTrigger className="flex items-center gap-2 w-full px-6 py-4 hover:bg-accent/50 transition-colors">
+        <CollapsibleTrigger className="flex min-w-0 items-center gap-2 w-full px-4 py-4 text-left transition-colors hover:bg-accent/50 sm:px-6">
           <TierIcon className={`h-5 w-5 shrink-0 ${tierColor}`} />
-          <span className="font-semibold text-foreground">{character.name}</span>
-          <span className={`text-xs px-2 py-0.5 rounded-full ${isMain ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground"}`}>
+          <span className="min-w-0 truncate font-semibold text-foreground">{character.name}</span>
+          <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${isMain ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground"}`}>
             {tierLabel}
           </span>
           {subtitle && !expanded && (
-            <span className="text-sm text-muted-foreground ml-2 truncate flex-1 text-right">
+            <span className="ml-2 hidden min-w-0 flex-1 truncate text-right text-sm text-muted-foreground md:block">
               {subtitle}
             </span>
           )}
-          <ChevronDown className={`h-4 w-4 text-muted-foreground ml-auto shrink-0 transition-transform ${expanded ? "rotate-0" : "-rotate-90"}`} />
+          <ChevronDown className={`ml-auto h-4 w-4 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-0" : "-rotate-90"}`} />
         </CollapsibleTrigger>
         <CollapsibleContent>
-          <div className="px-6 py-3 space-y-2 border-t border-border/50">
+          <div className="space-y-3 border-t border-border/50 px-4 py-4 sm:px-6">
             {fields.map(({ key, label, placeholder }) => (
-              <div key={key} className="flex items-start gap-3">
-                <label className="text-xs text-muted-foreground w-14 shrink-0 pt-2">{label}</label>
-                <div className="flex-1">
-                  <SmartInput
+              <div key={key} className="grid gap-2 sm:grid-cols-[4.5rem_minmax(0,1fr)] sm:items-start">
+                <label className="pt-2 text-xs text-muted-foreground">{label}</label>
+                <div className="min-w-0">
+                  <CharacterField
+                    fieldKey={key}
                     value={editing[key] ?? (character[key as keyof Character] as string) ?? ""}
                     onChange={(v) => setEditing(prev => ({ ...prev, [key]: v }))}
                     placeholder={placeholder}
@@ -140,7 +138,7 @@ function CharacterCard({ character, onUpdate, onDelete }: {
                 </div>
               </div>
             ))}
-            <div className="flex gap-2 pt-2">
+            <div className="flex flex-wrap gap-2 pt-2">
               <Button size="sm" onClick={handleSave} className="rounded-full">保存</Button>
               <Button size="sm" variant="destructive" className="rounded-full" onClick={() => onDelete(character.id)}>
                 <Trash2 className="h-3 w-3" />删除
@@ -211,17 +209,20 @@ export function CharacterEditor({ project }: { project: Project }) {
     },
   });
 
-  if (loading) return <div className="text-muted-foreground">加载中...</div>;
+  if (loading) return <div className="p-6 text-muted-foreground">加载中...</div>;
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full min-h-0 flex-col">
       {/* Editor Header */}
-      <div className="flex items-center justify-between px-6 py-4">
-        <h2 className="text-lg font-semibold text-foreground">人物小传</h2>
-        <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
+      <div className="flex shrink-0 items-center justify-between gap-3 px-4 py-4 sm:px-6">
+        <div className="min-w-0">
+          <h2 className="truncate text-lg font-semibold text-foreground">人物小传</h2>
+          <p className="mt-0.5 hidden text-xs text-muted-foreground sm:block">维护主要角色、配角和关键人物关系</p>
+        </div>
+        <span className="flex shrink-0 items-center gap-1.5 text-sm text-muted-foreground">
           {generating ? (
             <>
-              <Loader2 className="h-3.5 w-3.5 text-primary animate-spin" />
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
               <span className="text-primary">生成中...</span>
             </>
           ) : `${characters.length} 个角色`}
@@ -231,7 +232,7 @@ export function CharacterEditor({ project }: { project: Project }) {
       <StaleAlert projectId={project.id} targetType="characters" onRegenerate={handleGenerate} />
 
       {outlineEmpty && (
-        <div className="mx-6 mb-2">
+        <div className="mx-4 mb-2 sm:mx-6">
           <Alert>
             <AlertDescription>请先完成大纲编写，再进行人物设计</AlertDescription>
           </Alert>
@@ -239,56 +240,58 @@ export function CharacterEditor({ project }: { project: Project }) {
       )}
 
       {error && (
-        <div className="mx-6 mb-2">
+        <div className="mx-4 mb-2 sm:mx-6">
           <Alert variant="destructive">
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         </div>
       )}
 
-      {/* Three-tier list — matches design */}
-      <div className="flex-1 px-8 py-5 overflow-auto min-h-0 space-y-6">
-        {generating && generatingStage === "characters" && (
-          <StreamingView
-            content={streamedContent}
-            thinkingContent={thinkingContent}
-            generating={generating}
-          />
-        )}
+      {/* Three-tier list — adaptive scroll area */}
+      <ScrollArea className="min-h-0 flex-1 px-4 py-4 sm:px-8 sm:py-5">
+        <div className="space-y-6 pr-2 sm:pr-3">
+          {generating && generatingStage === "characters" && (
+            <StreamingView
+              content={streamedContent}
+              thinkingContent={thinkingContent}
+              generating={generating}
+            />
+          )}
 
-        {main.length > 0 && (
-          <div className="space-y-2">
-            <h3 className="text-sm font-semibold text-primary px-2">主要角色</h3>
-            {main.map(c => <CharacterCard key={c.id} character={c} onUpdate={update} onDelete={remove} />)}
-          </div>
-        )}
+          {main.length > 0 && (
+            <div className="space-y-2">
+              <h3 className="px-2 text-sm font-semibold text-primary">主要角色</h3>
+              {main.map(c => <CharacterCard key={c.id} character={c} onUpdate={update} onDelete={remove} />)}
+            </div>
+          )}
 
-        {supporting.length > 0 && (
-          <div className="space-y-2">
-            <h3 className="text-sm font-semibold text-foreground px-2">重要配角</h3>
-            {supporting.map(c => <CharacterCard key={c.id} character={c} onUpdate={update} onDelete={remove} />)}
-          </div>
-        )}
+          {supporting.length > 0 && (
+            <div className="space-y-2">
+              <h3 className="px-2 text-sm font-semibold text-foreground">重要配角</h3>
+              {supporting.map(c => <CharacterCard key={c.id} character={c} onUpdate={update} onDelete={remove} />)}
+            </div>
+          )}
 
-        {minor.length > 0 && (
-          <Collapsible>
-            <CollapsibleTrigger className="flex items-center gap-2 text-sm font-semibold text-muted-foreground px-2 py-1">
-              <ChevronDown className="h-4 w-4" />
-              其他角色（已折叠）
-            </CollapsibleTrigger>
-            <CollapsibleContent className="space-y-2 mt-2">
-              {minor.map(c => <CharacterCard key={c.id} character={c} onUpdate={update} onDelete={remove} />)}
-            </CollapsibleContent>
-          </Collapsible>
-        )}
+          {minor.length > 0 && (
+            <Collapsible>
+              <CollapsibleTrigger className="flex items-center gap-2 px-2 py-1 text-sm font-semibold text-muted-foreground">
+                <ChevronDown className="h-4 w-4" />
+                其他角色（已折叠）
+              </CollapsibleTrigger>
+              <CollapsibleContent className="mt-2 space-y-2">
+                {minor.map(c => <CharacterCard key={c.id} character={c} onUpdate={update} onDelete={remove} />)}
+              </CollapsibleContent>
+            </Collapsible>
+          )}
 
-        {characters.length === 0 && !generating && (
-          <p className="text-muted-foreground text-center py-8">暂无人物，点击 AI 生成或手动添加</p>
-        )}
-      </div>
+          {characters.length === 0 && !generating && (
+            <p className="py-8 text-center text-muted-foreground">暂无人物，点击 AI 生成或手动添加</p>
+          )}
+        </div>
+      </ScrollArea>
 
-      {/* Action Bar — matches design: AI + Model + 手动添加 */}
-      <div className="flex items-center gap-2 px-6 py-2">
+      {/* Action Bar — AI + Model + 手动添加 */}
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border/60 px-4 py-3 sm:px-6">
         {generating ? (
           <Button variant="destructive" onClick={cancel} className="rounded-full px-4 py-2.5 gap-1.5">
             <Square className="h-4 w-4" />停止生成
@@ -299,17 +302,17 @@ export function CharacterEditor({ project }: { project: Project }) {
             AI 生成人物
           </Button>
         )}
-        <Button variant="secondary" className="rounded-full px-4 py-2.5 gap-1.5">
-          <Cpu className="h-4 w-4" />
+        <div className="inline-flex h-10 min-w-0 max-w-full shrink-0 items-center gap-2 rounded-full bg-secondary px-4 text-sm text-secondary-foreground">
+          <Cpu className="h-4 w-4 shrink-0" />
           <Select value={String(currentPresetId ?? "")} onValueChange={(v) => switchPreset(Number(v))}>
-            <SelectTrigger className="border-0 bg-transparent p-0 h-auto w-auto focus:ring-0 text-secondary-foreground">
+            <SelectTrigger className="h-auto w-[min(240px,55vw)] border-0 bg-transparent p-0 text-secondary-foreground focus:ring-0">
               <SelectValue placeholder="模型 ▼" />
             </SelectTrigger>
             <SelectContent>
               {presets.map(p => <SelectItem key={p.id} value={String(p.id)}>{p.name} ({p.model_name})</SelectItem>)}
             </SelectContent>
           </Select>
-        </Button>
+        </div>
         <Button variant="outline" onClick={() => setShowAddDialog(true)} className="rounded-full px-4 py-2.5 gap-1.5">
           <UserPlus className="h-4 w-4" />
           手动添加
@@ -329,7 +332,7 @@ export function CharacterEditor({ project }: { project: Project }) {
                 value={newDescription}
                 onChange={(e) => setNewDescription(e.target.value)}
                 placeholder="例如：一个冷酷的帝国将军，表面效忠皇帝但暗中策划推翻..."
-                className="min-h-[100px] resize-none mt-1"
+                className="app-scrollbar mt-1 min-h-[120px] resize-y"
                 autoFocus
               />
             </div>
