@@ -109,19 +109,23 @@ function CharacterCard({ character, onUpdate, onDelete }: {
 
   return (
     <Collapsible open={expanded} onOpenChange={setExpanded}>
-      <div className={`rounded-2xl border overflow-hidden ${isMain ? "border-border bg-card shadow-sm" : isSupporting ? "border-transparent bg-tile" : "border-transparent bg-accent"}`}>
-        <CollapsibleTrigger className="flex min-w-0 items-center gap-2 w-full px-4 py-4 text-left transition-colors hover:bg-accent/50 sm:px-6">
+      <div className={`w-full min-w-0 rounded-2xl border overflow-hidden ${isMain ? "border-border bg-card shadow-sm" : isSupporting ? "border-transparent bg-tile" : "border-transparent bg-accent"}`}>
+        <CollapsibleTrigger className="grid w-full min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-4 text-left transition-colors hover:bg-accent/50 sm:px-6">
           <TierIcon className={`h-5 w-5 shrink-0 ${tierColor}`} />
-          <span className="min-w-0 truncate font-semibold text-foreground">{character.name}</span>
-          <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${isMain ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground"}`}>
-            {tierLabel}
-          </span>
-          {subtitle && !expanded && (
-            <span className="ml-2 hidden min-w-0 flex-1 truncate text-right text-sm text-muted-foreground md:block">
-              {subtitle}
-            </span>
-          )}
-          <ChevronDown className={`ml-auto h-4 w-4 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-0" : "-rotate-90"}`} />
+          <div className="flex min-w-0 flex-col gap-1 lg:flex-row lg:items-center lg:gap-3">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="min-w-0 truncate font-semibold text-foreground">{character.name}</span>
+              <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${isMain ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground"}`}>
+                {tierLabel}
+              </span>
+            </div>
+            {subtitle && !expanded && (
+              <span className="min-w-0 truncate text-sm text-muted-foreground">
+                {subtitle}
+              </span>
+            )}
+          </div>
+          <ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-0" : "-rotate-90"}`} />
         </CollapsibleTrigger>
         <CollapsibleContent>
           <div className="space-y-3 border-t border-border/50 px-4 py-4 sm:px-6">
@@ -212,7 +216,7 @@ export function CharacterEditor({ project }: { project: Project }) {
   if (loading) return <div className="p-6 text-muted-foreground">加载中...</div>;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
       {/* Editor Header */}
       <div className="flex shrink-0 items-center justify-between gap-3 px-4 py-4 sm:px-6">
         <div className="min-w-0">
@@ -248,8 +252,8 @@ export function CharacterEditor({ project }: { project: Project }) {
       )}
 
       {/* Three-tier list — adaptive scroll area */}
-      <ScrollArea className="min-h-0 flex-1 px-4 py-4 sm:px-8 sm:py-5">
-        <div className="space-y-6 pr-2 sm:pr-3">
+      <ScrollArea className="min-h-0 min-w-0 flex-1 overflow-x-hidden px-4 py-4 sm:px-8 sm:py-5">
+        <div className="w-full min-w-0 max-w-full space-y-6 pr-2 sm:pr-3">
           {generating && generatingStage === "characters" && (
             <StreamingView
               content={streamedContent}
@@ -259,14 +263,14 @@ export function CharacterEditor({ project }: { project: Project }) {
           )}
 
           {main.length > 0 && (
-            <div className="space-y-2">
+            <div className="w-full min-w-0 space-y-2">
               <h3 className="px-2 text-sm font-semibold text-primary">主要角色</h3>
               {main.map(c => <CharacterCard key={c.id} character={c} onUpdate={update} onDelete={remove} />)}
             </div>
           )}
 
           {supporting.length > 0 && (
-            <div className="space-y-2">
+            <div className="w-full min-w-0 space-y-2">
               <h3 className="px-2 text-sm font-semibold text-foreground">重要配角</h3>
               {supporting.map(c => <CharacterCard key={c.id} character={c} onUpdate={update} onDelete={remove} />)}
             </div>
