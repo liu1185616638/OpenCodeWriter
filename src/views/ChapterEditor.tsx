@@ -158,7 +158,7 @@ export function ChapterEditor({ project }: { project: Project }) {
       )}
 
       {/* Main area */}
-      <div className="flex-1 flex overflow-auto">
+      <div className="flex-1 flex overflow-auto min-h-0">
         {/* Chapter list with drag reorder */}
         <div className="w-64 shrink-0 px-4 py-5 space-y-1.5 overflow-auto border-r border-border">
           {chapters.map((chapter) => (

@@ -71,6 +71,7 @@ impl ContextBuilder {
     }
 
     /// 构建人物生成上下文（注入大纲内容）
+    /// 输出要求：JSON 格式，便于后端直接解析入库
     pub fn build_characters_context(&self, outline: &str) -> Vec<ChatMessage> {
         let stopwords_hint = self.format_stopwords_hint();
 
@@ -83,8 +84,9 @@ impl ContextBuilder {
                     ## 避免AI味用词\n\n{}\n\n\
                     ## 输出格式要求\n\n\
                     先在 <thinking> 标签内分析大纲中的角色需求和关系网络，\
-                    然后在 </thinking> 之后按模板格式生成人物。\
-                    必须输出完整的人物小传，不可中途截断。",
+                    然后在 </thinking> 之后严格按照 JSON 格式输出人物。\
+                    不要输出 Markdown，不要使用代码块包裹，不要添加任何解释说明。\
+                    必须输出完整的人物列表，不可中途截断。",
                     resources::METHODOLOGY,
                     stopwords_hint,
                 ),
@@ -94,15 +96,31 @@ impl ContextBuilder {
                 content: format!(
                     "请根据以下大纲，为小说创建完整的人物小传。\n\n\
                     ## 小说大纲\n\n{}\n\n\
-                    ## 人物模板\n\n{}\n\n\
-                    ## 人物示例\n\n{}\n\n\
+                    ## 人物示例（参考质量，但你的输出必须是 JSON）\n\n{}\n\n\
                     请先在 <thinking> 标签内构思角色需求和关系，\
-                    然后在 </thinking> 之后严格按照模板格式生成人物，参考示例的质量和详细程度。\
-                    每个角色都需要清晰的动机和性格多面性，人物关系要能推动情节发展。\
-                    必须输出完整人物，不可中途截断。\
-                    避免使用AI味高频词。",
+                    然后在 </thinking> 之后严格按照以下 JSON 格式输出人物：\n\n\
+                    {{\n  \
+                      \"characters\": [\n    \
+                        {{\n      \
+                          \"name\": \"角色名\",\n      \
+                          \"tier\": \"main\",\n      \
+                          \"identity\": \"身份描述\",\n      \
+                          \"appearance\": \"外貌描写\",\n      \
+                          \"personality\": \"性格特质\",\n      \
+                          \"motivation\": \"内在驱动力\",\n      \
+                          \"relationships\": \"人物关系\",\n      \
+                          \"key_events\": \"关键事件\"\n    \
+                    }}\n  \
+                    ]\n\
+                    }}\n\n\
+                    字段要求：\n\
+                    - tier 只能是 \"main\"（主角）、\"supporting\"（重要配角）、\"minor\"（其他角色）\n\
+                    - 每个字段必须是字符串，不可省略\n\
+                    - characters 至少包含 3 个角色\n\
+                    - 人物关系要能推动情节发展\n\
+                    - 每个角色都需要清晰的动机和性格多面性\n\n\
+                    必须输出完整 JSON，不可中途截断。",
                     outline,
-                    resources::CHARACTERS_TEMPLATE,
                     resources::CHARACTERS_EXAMPLE,
                 ),
             },

@@ -1,12 +1,13 @@
 use futures::StreamExt;
 use rusqlite::{params, OptionalExtension};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::ai::client::{AiClient, ChatMessage};
 use crate::ai::context::ContextBuilder;
 use crate::ai::events;
 use crate::db::{get_conn, DbState};
 use crate::models::{Character, ModelPreset, StyleConfig};
+use serde::Deserialize;
 
 fn get_preset(state: &State<'_, DbState>, preset_id: i64) -> Result<ModelPreset, String> {
     let conn = get_conn(state)?;
@@ -349,6 +350,126 @@ pub async fn generate_outline(
     Ok(session_id)
 }
 
+/// JSON 人物数据结构，用于解析 AI 返回
+#[derive(Debug, Deserialize)]
+struct CharacterJson {
+    name: String,
+    tier: String,
+    identity: String,
+    appearance: String,
+    personality: String,
+    motivation: String,
+    relationships: String,
+    key_events: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CharactersResponse {
+    characters: Vec<CharacterJson>,
+}
+
+/// Strip <thinking>...</thinking> tags from content before JSON parsing.
+/// Uses manual scan instead of regex crate to avoid adding a dependency.
+fn strip_thinking_tags(content: &str) -> String {
+    let mut result = String::new();
+    let mut pos = 0;
+    let open = "<thinking>";
+    let close = "</thinking>";
+
+    while let Some(start) = content[pos..].find(open) {
+        // Content before the opening tag
+        result.push_str(&content[pos..pos + start]);
+        let after_open = pos + start + open.len();
+        if let Some(end) = content[after_open..].find(close) {
+            // Skip the thinking block entirely
+            pos = after_open + end + close.len();
+        } else {
+            // Unclosed thinking tag — skip rest
+            break;
+        }
+    }
+    // Remaining content after all thinking blocks
+    result.push_str(&content[pos..]);
+    result.trim().to_string()
+}
+
+/// Parse AI-returned JSON characters and insert into database
+fn save_generated_characters(
+    state: &State<'_, DbState>,
+    project_id: i64,
+    content: &str,
+) -> Result<usize, String> {
+    let cleaned = strip_thinking_tags(content);
+    // Some models wrap JSON in code blocks — strip those too
+    let json_text = cleaned
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+
+    let response: CharactersResponse = serde_json::from_str(json_text)
+        .map_err(|e| format!("人物 JSON 解析失败: {}", e))?;
+
+    let conn = get_conn(state)?;
+    let mut saved = 0;
+
+    for ch in &response.characters {
+        // Skip empty names
+        if ch.name.trim().is_empty() {
+            continue;
+        }
+
+        // Check if character with same name already exists
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM characters WHERE project_id = ?1 AND name = ?2",
+                params![project_id, ch.name.trim()],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+
+        if exists {
+            continue; // Skip duplicates
+        }
+
+        // Auto sort_order: use MAX + 1
+        let max_sort: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(sort_order), -1) FROM characters WHERE project_id = ?1",
+                params![project_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+
+        let tier = match ch.tier.as_str() {
+            "main" | "supporting" | "minor" => ch.tier.as_str(),
+            _ => "supporting", // Default tier for unrecognized values
+        };
+
+        conn.execute(
+            "INSERT INTO characters (project_id, name, tier, identity, appearance, personality, motivation, relationships, key_events, sort_order) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                project_id,
+                ch.name.trim(),
+                tier,
+                ch.identity.trim(),
+                ch.appearance.trim(),
+                ch.personality.trim(),
+                ch.motivation.trim(),
+                ch.relationships.trim(),
+                ch.key_events.trim(),
+                max_sort + 1,
+            ],
+        )
+        .map_err(|e| format!("插入人物失败: {}", e))?;
+
+        saved += 1;
+    }
+
+    Ok(saved)
+}
+
 #[tauri::command]
 pub async fn generate_characters(
     project_id: i64,
@@ -365,7 +486,12 @@ pub async fn generate_characters(
     let messages = builder.build_characters_context(&outline_content);
     let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name);
 
-    stream_and_emit(&client, messages, &app, &session_id).await?;
+    let content = stream_and_emit(&client, messages, &app, &session_id).await?;
+
+    // Parse JSON and insert characters into database
+    let db_state = app.state::<DbState>();
+    let count = save_generated_characters(&db_state, project_id, &content)?;
+    eprintln!("[generate_characters] saved {} characters", count);
 
     Ok(session_id)
 }

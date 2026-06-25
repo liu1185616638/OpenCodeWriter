@@ -166,7 +166,7 @@ export function StreamingView({ content, thinkingContent, generating }: Streamin
   }
 
   return (
-    <div ref={containerRef} className="space-y-3 h-full overflow-auto">
+    <div ref={containerRef} className="space-y-3 overflow-auto">
       {/* Thinking panel — auto-expanded during thinking phase */}
       {hasThinkingStarted && (
         <div className="rounded-xl border border-primary/20 bg-primary/5 overflow-hidden">

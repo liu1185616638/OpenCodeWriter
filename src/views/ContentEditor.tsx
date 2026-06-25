@@ -139,7 +139,7 @@ export function ContentEditor({ project }: { project: Project }) {
       )}
 
       {/* Main area: chapter list + editor */}
-      <div className="flex-1 flex overflow-auto">
+      <div className="flex-1 flex overflow-auto min-h-0">
         {/* Chapter list */}
         <div className="w-48 shrink-0 px-4 py-5 space-y-1 overflow-auto border-r border-border">
           {chapters.map((chapter) => (

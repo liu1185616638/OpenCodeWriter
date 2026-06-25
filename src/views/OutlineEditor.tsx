@@ -114,7 +114,7 @@ export function OutlineEditor({ project }: { project: Project }) {
       <StaleAlert projectId={project.id} targetType="outline" />
 
       {/* Editor Area — streaming view when generating, textarea otherwise */}
-      <div className="flex-1 px-8 py-5 overflow-auto">
+      <div className="flex-1 px-8 py-5 overflow-auto min-h-0">
         {generating ? (
           <StreamingView
             content={content}

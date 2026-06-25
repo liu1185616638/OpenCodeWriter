@@ -144,6 +144,10 @@
   * {
     @apply border-border;
   }
+  html, body {
+    height: 100vh;
+    overflow: hidden;
+  }
   body {
     @apply bg-background text-foreground;
     font-family: Inter, system-ui, -apple-system, sans-serif;

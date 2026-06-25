@@ -12,6 +12,7 @@ import { useSettings } from "@/hooks/useSettings";
 import { useAI } from "@/contexts/AIContext";
 import { useAppEvents } from "@/hooks/useAppEvents";
 import { StaleAlert } from "@/components/shared/StaleAlert";
+import { StreamingView } from "@/components/shared/StreamingView";
 import type { Project, Character, CharacterTier } from "@/types";
 import { Sparkles, Trash2, ChevronDown, Square, Cpu, UserPlus, Shield, Star, Loader2 } from "lucide-react";
 import { toast } from "sonner";
@@ -156,8 +157,7 @@ export function CharacterEditor({ project }: { project: Project }) {
   const { characters, main, supporting, minor, loading, load, update, remove } = useCharacters(project.id);
   const { outline, load: loadOutline } = useOutline(project.id);
   const { currentPreset, currentPresetId, switchPreset, presets } = useSettings();
-  const { generating, error, generate, cancel } = useAI();
-  // thinkingContent available but not used for non-text editors
+  const { generating, streamedContent, thinkingContent, generatingStage, error, generate, cancel } = useAI();
 
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [newDescription, setNewDescription] = useState("");
@@ -247,7 +247,15 @@ export function CharacterEditor({ project }: { project: Project }) {
       )}
 
       {/* Three-tier list — matches design */}
-      <div className="flex-1 px-8 py-5 overflow-auto space-y-6">
+      <div className="flex-1 px-8 py-5 overflow-auto min-h-0 space-y-6">
+        {generating && generatingStage === "characters" && (
+          <StreamingView
+            content={streamedContent}
+            thinkingContent={thinkingContent}
+            generating={generating}
+          />
+        )}
+
         {main.length > 0 && (
           <div className="space-y-2">
             <h3 className="text-sm font-semibold text-primary px-2">主要角色</h3>
@@ -343,11 +351,11 @@ export function CharacterEditor({ project }: { project: Project }) {
             <Button variant="outline" onClick={() => setShowAddDialog(false)} className="rounded-full">取消</Button>
             <Button
               onClick={handleGenerateFromDescription}
-              disabled={!newDescription.trim() || !currentPreset}
+              disabled
               className="rounded-full gap-1.5"
             >
               <Sparkles className="h-4 w-4" />
-              AI 生成
+              AI 生成（暂未开放）
             </Button>
           </DialogFooter>
         </DialogContent>

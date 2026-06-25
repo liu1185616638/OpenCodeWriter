@@ -126,7 +126,7 @@ function WritingStylePage({ projectId, currentProject }: { projectId: number | n
 
   if (!projectId || !currentStyle) {
     return (
-      <div className="flex-1 overflow-auto py-8 px-10">
+      <div className="flex-1 overflow-auto min-h-0 py-8 px-10">
         <h2 className="text-xl font-semibold text-foreground mb-6">写作风格</h2>
         <Card className="rounded-3xl border border-border">
           <CardContent className="py-8 text-center text-muted-foreground">
@@ -142,7 +142,7 @@ function WritingStylePage({ projectId, currentProject }: { projectId: number | n
 
   return (
     <>
-    <div className="flex-1 overflow-auto px-10 py-8">
+    <div className="flex-1 overflow-auto min-h-0 px-10 py-8">
       <h2 className="text-xl font-semibold text-foreground mb-6">写作风格</h2>
 
       {/* Current project card */}
@@ -382,7 +382,7 @@ function ModelConfigPage() {
   };
 
   return (
-    <div className="flex-1 overflow-auto px-10 py-8">
+    <div className="flex-1 overflow-auto min-h-0 px-10 py-8">
       <h2 className="text-xl font-semibold text-foreground mb-6">模型配置</h2>
 
       {/* Add new preset */}
@@ -492,7 +492,7 @@ function ShortcutsPage() {
     { key: "Ctrl+P", desc: "切换项目" },
   ];
   return (
-    <div className="flex-1 overflow-auto px-10 py-8">
+    <div className="flex-1 overflow-auto min-h-0 px-10 py-8">
       <h2 className="text-xl font-semibold text-foreground mb-6">快捷键</h2>
       <Card className="rounded-3xl border border-border shadow-sm">
         <CardContent className="divide-y divide-border">
@@ -512,7 +512,7 @@ function ShortcutsPage() {
 function AboutPage() {
   const { theme, set } = useTheme();
   return (
-    <div className="flex-1 overflow-auto px-10 py-8">
+    <div className="flex-1 overflow-auto min-h-0 px-10 py-8">
       <h2 className="text-xl font-semibold text-foreground mb-6">关于</h2>
 
       <Card className="rounded-3xl border border-border shadow-sm mb-5">
