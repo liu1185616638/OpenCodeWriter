@@ -27,6 +27,7 @@ function WorkspaceTitleBar({ onNewProject, onToggleTheme }: { onNewProject: () =
     onNewProject,
     onToggleTheme,
     onToggleSidebar: toggleSidebar,
+    showSidebarToggle: true,
   };
   return <TitleBar actions={actions} />;
 }
