@@ -112,15 +112,17 @@ function CharacterCard({ character, onUpdate, onDelete }: {
       <div className={`w-full min-w-0 rounded-2xl border overflow-hidden ${isMain ? "border-border bg-card shadow-sm" : isSupporting ? "border-transparent bg-tile" : "border-transparent bg-accent"}`}>
         <CollapsibleTrigger className="grid w-full min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-4 text-left transition-colors hover:bg-accent/50 sm:px-6">
           <TierIcon className={`h-5 w-5 shrink-0 ${tierColor}`} />
-          <div className="flex min-w-0 flex-col gap-1 lg:flex-row lg:items-center lg:gap-3">
+          <div className="grid min-w-0 gap-1">
             <div className="flex min-w-0 items-center gap-2">
-              <span className="min-w-0 truncate font-semibold text-foreground">{character.name}</span>
+              <span className="max-w-40 shrink-0 truncate font-semibold text-foreground sm:max-w-56 lg:max-w-72" title={character.name}>
+                {character.name}
+              </span>
               <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${isMain ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground"}`}>
                 {tierLabel}
               </span>
             </div>
             {subtitle && !expanded && (
-              <span className="min-w-0 truncate text-sm text-muted-foreground">
+              <span className="block min-w-0 truncate text-sm text-muted-foreground" title={subtitle}>
                 {subtitle}
               </span>
             )}
