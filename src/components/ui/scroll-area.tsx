@@ -11,17 +11,17 @@ function ScrollArea({
   return (
     <ScrollAreaPrimitive.Root
       data-slot="scroll-area"
-      className={cn("relative", className)}
+      className={cn("relative overflow-hidden", className)}
       {...props}
     >
       <ScrollAreaPrimitive.Viewport
         data-slot="scroll-area-viewport"
-        className="size-full rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1"
+        className="h-full w-full rounded-[inherit] outline-none focus-visible:ring-[3px] focus-visible:ring-ring/40"
       >
         {children}
       </ScrollAreaPrimitive.Viewport>
       <ScrollBar />
-      <ScrollAreaPrimitive.Corner />
+      <ScrollAreaPrimitive.Corner className="bg-transparent" />
     </ScrollAreaPrimitive.Root>
   )
 }
@@ -36,18 +36,16 @@ function ScrollBar({
       data-slot="scroll-area-scrollbar"
       orientation={orientation}
       className={cn(
-        "flex touch-none p-px transition-colors select-none",
-        orientation === "vertical" &&
-          "h-full w-2.5 border-l border-l-transparent",
-        orientation === "horizontal" &&
-          "h-2.5 flex-col border-t border-t-transparent",
+        "flex touch-none select-none p-px transition-colors",
+        orientation === "vertical" && "h-full w-2.5 border-l border-l-transparent",
+        orientation === "horizontal" && "h-2.5 flex-col border-t border-t-transparent",
         className
       )}
       {...props}
     >
       <ScrollAreaPrimitive.ScrollAreaThumb
         data-slot="scroll-area-thumb"
-        className="relative flex-1 rounded-full bg-border"
+        className="relative flex-1 rounded-full bg-border/70 transition-colors hover:bg-muted-foreground/70 dark:bg-muted-foreground/35 dark:hover:bg-muted-foreground/60"
       />
     </ScrollAreaPrimitive.ScrollAreaScrollbar>
   )
