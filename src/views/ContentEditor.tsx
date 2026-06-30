@@ -4,7 +4,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useChapters } from "@/hooks/useChapters";
 import { useContent } from "@/hooks/useContent";
 import { useSettings } from "@/hooks/useSettings";
@@ -12,10 +11,20 @@ import { useAI } from "@/contexts/AIContext";
 import { useStopwords } from "@/hooks/useStopwords";
 import { useAppEvents } from "@/hooks/useAppEvents";
 import { StaleAlert } from "@/components/shared/StaleAlert";
+import { FlowGuide } from "@/components/flow/FlowGuide";
 import { StreamingView, stripThinking } from "@/components/shared/StreamingView";
 import { STOPWORD_SUGGESTIONS } from "@/lib/stopwords";
+import { WorkspacePageLayout } from "@/components/editor/WorkspacePageLayout";
+import { AppScrollArea } from "@/components/shared/AppScrollArea";
+import { EditorActionBar } from "@/components/editor/EditorActionBar";
+import { ModelPresetSelect } from "@/components/editor/ModelPresetSelect";
+import { EditorStatusText } from "@/components/editor/EditorStatusText";
+import { GenerationStatusBar } from "@/components/ai/GenerationStatusBar";
+import { GenerateConfirmDialog } from "@/components/ai/GenerateConfirmDialog";
+import type { GenerationApplyMode } from "@/types/ai";
 import type { Project } from "@/types";
-import { Save, Sparkles, Square, Cpu, WandSparkles, Loader2 } from "lucide-react";
+import { saveContent } from "@/lib/tauri";
+import { Save, Sparkles, Square, WandSparkles } from "lucide-react";
 import { toast } from "sonner";
 
 export function ContentEditor({ project }: { project: Project }) {
@@ -23,14 +32,38 @@ export function ContentEditor({ project }: { project: Project }) {
   const [selectedChapterId, setSelectedChapterId] = useState<number | null>(null);
   const { content, saving, load: loadContent, save } = useContent(selectedChapterId ?? 0);
   const { currentPreset, currentPresetId, switchPreset, presets } = useSettings();
-  const { generating, streamedContent, thinkingContent, generatingStage, error, generate, cancel } = useAI();
+  const { generating, streamedContent, thinkingContent, generatingStage, error, generate, cancel, generationMeta, generatedCharCount, elapsedMs } = useAI();
   const [text, setText] = useState("");
+  const [showGenerateConfirm, setShowGenerateConfirm] = useState(false);
+  const applyModeRef = useRef<GenerationApplyMode>("replace");
 
   const stopwords = useStopwords(text);
 
   const hasNoChapters = !chaptersLoading && chapters.length === 0;
 
   useEffect(() => { loadChapters(); }, [loadChapters]);
+
+  // 章节加载完成后，恢复上次选中的章节
+  useEffect(() => {
+    if (chaptersLoading || chapters.length === 0 || selectedChapterId !== null) return;
+    const saved = localStorage.getItem(`lastChapter_${project.id}`);
+    if (saved) {
+      const savedId = parseInt(saved, 10);
+      if (chapters.some(c => c.id === savedId)) {
+        setSelectedChapterId(savedId);
+        return;
+      }
+    }
+    // 无存储记录时默认选中第一章
+    setSelectedChapterId(chapters[0].id);
+  }, [chaptersLoading, chapters, project.id, selectedChapterId]);
+
+  // 记录当前选中章节，供下次恢复
+  useEffect(() => {
+    if (selectedChapterId !== null) {
+      localStorage.setItem(`lastChapter_${project.id}`, String(selectedChapterId));
+    }
+  }, [selectedChapterId, project.id]);
 
   useEffect(() => {
     if (selectedChapterId) {
@@ -56,25 +89,37 @@ export function ContentEditor({ project }: { project: Project }) {
     }
   }, [streamedContent, generating, generatingStage]);
 
-  // Auto-save when generation finishes
+  // 生成开始时锁定目标章节和原始文本，避免切换章节后保错位置
   const prevGeneratingRef = useRef(false);
+  const generatingChapterIdRef = useRef<number | null>(null);
+  const textBeforeGenerationRef = useRef("");
+
+  // Auto-save when generation finishes
   useEffect(() => {
-    if (prevGeneratingRef.current && !generating && selectedChapterId) {
+    if (prevGeneratingRef.current && !generating) {
+      // 立即重置，防止 deps 变化时重复触发
+      prevGeneratingRef.current = false;
+      const chapterId = generatingChapterIdRef.current;
+      if (!chapterId || !streamedContent) return;
+      const cleaned = stripThinking(streamedContent);
       const timer = setTimeout(() => {
-        if (streamedContent) {
-          const cleaned = stripThinking(streamedContent);
+        if (applyModeRef.current === "append" && textBeforeGenerationRef.current.trim()) {
+          const combined = textBeforeGenerationRef.current + "\n\n" + cleaned;
+          setText(combined);
+          saveContent(project.id, chapterId, combined)
+            .then(() => toast.success("正文已自动保存（追加）"))
+            .catch(() => toast.error("自动保存失败"));
+        } else {
           setText(cleaned);
-          save(project.id, cleaned).then(() => {
-            toast.success("正文已自动保存");
-          }).catch(() => {
-            toast.error("自动保存失败");
-          });
+          saveContent(project.id, chapterId, cleaned)
+            .then(() => toast.success("正文已自动保存"))
+            .catch(() => toast.error("自动保存失败"));
         }
       }, 50);
       return () => clearTimeout(timer);
     }
     prevGeneratingRef.current = generating;
-  }, [generating, streamedContent, selectedChapterId, save, project.id]);
+  }, [generating, streamedContent, project.id]);
 
   const handleSave = useCallback(async () => {
     if (selectedChapterId) {
@@ -82,28 +127,43 @@ export function ContentEditor({ project }: { project: Project }) {
     }
   }, [selectedChapterId, save, project.id, text]);
 
-  const handleGenerate = useCallback(async () => {
-    if (!currentPreset || !selectedChapterId) return;
-    setText("");
+  const startGenerate = useCallback(async (mode: GenerationApplyMode) => {
+    setShowGenerateConfirm(false);
+    applyModeRef.current = mode;
+    generatingChapterIdRef.current = selectedChapterId;   // 锁定目标章节
+    textBeforeGenerationRef.current = text;               // 锁定追加模式的原始文本
+    if (mode === "replace") setText("");
     await generate({
       command: "generate_content",
       stage: "content",
       args: {
         projectId: project.id,
-        chapterId: selectedChapterId,
-        presetId: currentPreset.id,
+        chapterId: selectedChapterId!,
+        presetId: currentPreset!.id,
       },
       onComplete: () => {
-        // Toast is shown by auto-save effect below
+        // auto-save effect handles saving
       },
       onError: (err) => {
         toast.error("生成失败", { description: err });
       },
     });
-  }, [currentPreset, selectedChapterId, generate, project.id]);
+  }, [generate, project.id, selectedChapterId, currentPreset]);
+
+  const handleGenerateClick = useCallback(() => {
+    if (!currentPreset || !selectedChapterId || generating) return;
+    if (text.trim()) {
+      setShowGenerateConfirm(true);
+      return;
+    }
+    startGenerate("replace");
+  }, [currentPreset, selectedChapterId, generating, text, startGenerate]);
 
   const handlePolish = useCallback(async () => {
     if (!currentPreset || !selectedChapterId) return;
+    applyModeRef.current = "replace";
+    generatingChapterIdRef.current = selectedChapterId;   // 锁定目标章节
+    textBeforeGenerationRef.current = text;
     await generate({
       command: "polish_content",
       stage: "content",
@@ -122,7 +182,7 @@ export function ContentEditor({ project }: { project: Project }) {
   }, [currentPreset, selectedChapterId, generate, project.id]);
 
   useAppEvents({
-    onGenerate: handleGenerate,
+    onGenerate: handleGenerateClick,
     onSave: handleSave,
     onSwitchModel: () => {
       if (presets.length > 1 && currentPresetId) {
@@ -139,35 +199,92 @@ export function ContentEditor({ project }: { project: Project }) {
   if (chaptersLoading) return <div className="p-6 text-muted-foreground">加载中...</div>;
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
-      {/* Editor Header */}
-      <div className="flex shrink-0 items-center justify-between gap-3 px-4 py-4 sm:px-6">
-        <h2 className="min-w-0 truncate text-lg font-semibold text-foreground">
-          {selectedChapter ? `第${selectedChapter.chapter_number}章 ${selectedChapter.title || "未命名"}` : "正文"}
-        </h2>
-        <span className="flex shrink-0 items-center gap-1.5 text-sm text-muted-foreground">
+    <>
+    <WorkspacePageLayout
+      title={selectedChapter ? `第${selectedChapter.chapter_number}章 ${selectedChapter.title || "未命名"}` : "正文"}
+      status={
+        generating && generatingStage === "content" ? (
+          <GenerationStatusBar
+            stageLabel="正文"
+            modelName={generationMeta?.modelName}
+            charCount={generatedCharCount}
+            elapsedMs={elapsedMs}
+          />
+        ) : (
+          <EditorStatusText
+            generating={generating}
+            idleLabel={selectedChapterId ? `${charCount.toLocaleString()} 字${stopwords.length > 0 ? ` | AI 呜: ${stopwords.length} 处标记` : ""}` : ""}
+          />
+        )
+      }
+      alerts={
+        <>
+          <FlowGuide stage="content" input={{ chapterCount: chapters.length, selectedChapterId }} />
+          <StaleAlert projectId={project.id} targetType="contents" onRegenerate={handleGenerateClick} />
+          {hasNoChapters && (
+            <div className="mx-4 mb-2 sm:mx-6">
+              <Alert>
+                <AlertDescription>请先创建章节目录，再进行正文编辑</AlertDescription>
+              </Alert>
+            </div>
+          )}
+        </>
+      }
+      error={error}
+      actionBar={
+        <EditorActionBar>
           {generating ? (
-            <>
-              <Loader2 className="h-3.5 w-3.5 text-primary animate-spin" />
-              <span className="text-primary">生成中...</span>
-            </>
-          ) : selectedChapterId ? `${charCount.toLocaleString()} 字${stopwords.length > 0 ? ` | AI 味: ${stopwords.length} 处标记` : ""}` : ""}
-        </span>
-      </div>
+            <Button
+              variant="destructive"
+              onClick={cancel}
+              className="rounded-full px-4 py-2.5 gap-1.5"
+            >
+              <Square className="h-4 w-4" />停止生成
+            </Button>
+          ) : (
+            <Button
+              onClick={handleGenerateClick}
+              disabled={!currentPreset || !selectedChapterId}
+              className="rounded-full px-4 py-2.5 gap-1.5"
+            >
+              <Sparkles className="h-4 w-4" />
+              AI 生成正文
+            </Button>
+          )}
 
-      {/* Stale Alert */}
-      <StaleAlert projectId={project.id} targetType="contents" onRegenerate={handleGenerate} />
+          <ModelPresetSelect
+            value={currentPresetId ?? null}
+            presets={presets}
+            onChange={(v) => switchPreset(v)}
+            placeholder="选择模型"
+          />
 
-      {hasNoChapters && (
-        <div className="mx-4 mb-2 sm:mx-6">
-          <Alert>
-            <AlertDescription>请先创建章节目录，再进行正文编辑</AlertDescription>
-          </Alert>
-        </div>
-      )}
+          {generating ? null : (
+            <Button
+              variant="outline"
+              onClick={handlePolish}
+              disabled={!currentPreset || !selectedChapterId || !text.trim()}
+              className="rounded-full px-4 py-2.5 gap-1.5"
+            >
+              <WandSparkles className="h-4 w-4" />
+              涤色打磨
+            </Button>
+          )}
 
+          <Button
+            variant="outline"
+            onClick={handleSave}
+            disabled={saving || !selectedChapterId || generating}
+            className="rounded-full px-4 py-2.5 gap-1.5"
+          >
+            <Save className="h-4 w-4" />
+            保存
+          </Button>
+        </EditorActionBar>
+      }
+    >
       {/* Main area: chapter list + editor */}
-      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+      <div className="flex min-h-0 min-w-0 h-full overflow-hidden">
         {/* Chapter list */}
         <ScrollArea className="w-48 shrink-0 border-r border-border">
           <div className="space-y-1 px-4 py-5 pr-2">
@@ -189,8 +306,8 @@ export function ContentEditor({ project }: { project: Project }) {
         </ScrollArea>
 
         {/* Content editor — streaming view when generating, textarea otherwise */}
-        <ScrollArea className="min-w-0 flex-1 px-4 py-5 sm:px-8">
-          <div className="flex min-h-full w-full min-w-0 flex-col pr-2 sm:pr-3">
+        <AppScrollArea>
+          <div className="flex min-h-full w-full min-w-0 flex-col">
             {selectedChapterId ? (
               <>
                 {generating ? (
@@ -235,68 +352,14 @@ export function ContentEditor({ project }: { project: Project }) {
               <p className="text-muted-foreground text-center py-8">选择左侧章节开始编辑</p>
             )}
           </div>
-        </ScrollArea>
+        </AppScrollArea>
       </div>
-
-      {error && (
-        <p className="shrink-0 px-4 text-sm text-destructive sm:px-8">{error}</p>
-      )}
-
-      {/* Action Bar — pill buttons */}
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border/60 px-4 py-3 sm:px-6">
-        {generating ? (
-          <Button
-            variant="destructive"
-            onClick={cancel}
-            className="rounded-full px-4 py-2.5 gap-1.5"
-          >
-            <Square className="h-4 w-4" />停止生成
-          </Button>
-        ) : (
-          <Button
-            onClick={handleGenerate}
-            disabled={!currentPreset || !selectedChapterId}
-            className="rounded-full px-4 py-2.5 gap-1.5"
-          >
-            <Sparkles className="h-4 w-4" />
-            AI 生成正文
-          </Button>
-        )}
-
-        <div className="inline-flex h-10 min-w-0 max-w-full shrink-0 items-center gap-2 rounded-full bg-secondary px-4 text-sm text-secondary-foreground">
-          <Cpu className="h-4 w-4 shrink-0" />
-          <Select value={String(currentPresetId ?? "")} onValueChange={(v) => switchPreset(Number(v))}>
-            <SelectTrigger className="h-auto w-[min(240px,55vw)] border-0 bg-transparent p-0 text-secondary-foreground focus:ring-0">
-              <SelectValue placeholder="模型 ▼" />
-            </SelectTrigger>
-            <SelectContent>
-              {presets.map(p => <SelectItem key={p.id} value={String(p.id)}>{p.name} ({p.model_name})</SelectItem>)}
-            </SelectContent>
-          </Select>
-        </div>
-
-        {generating ? null : (
-          <Button
-            variant="outline"
-            onClick={handlePolish}
-            disabled={!currentPreset || !selectedChapterId || !text.trim()}
-            className="rounded-full px-4 py-2.5 gap-1.5"
-          >
-            <WandSparkles className="h-4 w-4" />
-            润色打磨
-          </Button>
-        )}
-
-        <Button
-          variant="outline"
-          onClick={handleSave}
-          disabled={saving || !selectedChapterId || generating}
-          className="rounded-full px-4 py-2.5 gap-1.5"
-        >
-          <Save className="h-4 w-4" />
-          保存
-        </Button>
-      </div>
-    </div>
+    </WorkspacePageLayout>
+    <GenerateConfirmDialog
+      open={showGenerateConfirm}
+      onOpenChange={setShowGenerateConfirm}
+      onConfirm={startGenerate}
+    />
+    </>
   );
 }

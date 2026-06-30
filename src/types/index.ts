@@ -57,6 +57,11 @@ export interface Content {
   updated_at: string;
 }
 
+export interface StaleReason {
+  source_type: string;
+  created_at: string;
+}
+
 export interface StaleMarker {
   id: number;
   project_id: number;
@@ -90,3 +95,20 @@ export interface ModelInfo {
 }
 
 export type OutlineStatus = "empty" | "draft" | "completed";
+
+export interface ProjectProgress {
+  has_outline: boolean;
+  character_count: number;
+  chapter_count: number;
+  has_content: boolean;
+}
+
+export interface ContentSnapshot {
+  id: number;
+  project_id: number;
+  target_type: string;
+  target_id: number | null;
+  content: string;
+  reason: string;
+  created_at: string;
+}

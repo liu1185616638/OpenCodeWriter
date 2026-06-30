@@ -19,6 +19,7 @@ pub fn run() {
             commands::projects::get_project,
             commands::projects::delete_project,
             commands::projects::update_project_stage,
+            commands::projects::get_project_progress,
             // Outlines
             commands::outlines::get_outline,
             commands::outlines::save_outline,
@@ -53,6 +54,7 @@ pub fn run() {
             // Stale
             commands::stale::mark_stale,
             commands::stale::is_stale,
+            commands::stale::list_stale_reasons,
             commands::stale::clear_stale,
             // Style
             commands::style::get_style_config,
@@ -66,6 +68,10 @@ pub fn run() {
             commands::ai::generate_character_from_description,
             commands::ai::polish_content,
             commands::ai::polish_chapter,
+            // Snapshots
+            commands::snapshots::create_snapshot,
+            commands::snapshots::list_snapshots,
+            commands::snapshots::delete_old_snapshots,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

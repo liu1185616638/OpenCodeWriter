@@ -1,7 +1,14 @@
 use rusqlite::params;
+use serde::Serialize;
 use tauri::State;
 
 use crate::db::{DbState, get_conn};
+
+#[derive(Debug, Serialize)]
+pub struct StaleReason {
+    pub source_type: String,
+    pub created_at: String,
+}
 
 /// Cascade rules:
 /// - outline changed -> mark characters, chapters, contents as stale
@@ -50,6 +57,35 @@ pub fn is_stale(project_id: i64, target_type: String, state: State<'_, DbState>)
         )
         .map_err(|e| e.to_string())?;
     Ok(count > 0)
+}
+
+#[tauri::command]
+pub fn list_stale_reasons(
+    project_id: i64,
+    target_type: String,
+    state: State<'_, DbState>,
+) -> Result<Vec<StaleReason>, String> {
+    let conn = get_conn(&state)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT source_type, created_at FROM stale_markers \
+             WHERE project_id = ?1 AND target_type = ?2 \
+             ORDER BY created_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![project_id, target_type], |row| {
+            Ok(StaleReason {
+                source_type: row.get(0)?,
+                created_at: row.get(1)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(result)
 }
 
 #[tauri::command]

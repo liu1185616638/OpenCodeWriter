@@ -7,3 +7,4 @@ pub mod settings;
 pub mod stale;
 pub mod style;
 pub mod ai;
+pub mod snapshots;

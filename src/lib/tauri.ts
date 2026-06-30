@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Project, Outline, Character, Chapter, Content,
-  ModelPreset, StyleConfig
+  ModelPreset, StyleConfig, ContentSnapshot, StaleReason, ProjectProgress
 } from "@/types";
 
 // Projects
@@ -23,6 +23,10 @@ export async function deleteProject(id: number): Promise<void> {
 
 export async function updateProjectStage(id: number, stage: string): Promise<Project> {
   return invoke("update_project_stage", { id, stage });
+}
+
+export async function getProjectProgress(projectId: number): Promise<ProjectProgress> {
+  return invoke("get_project_progress", { projectId });
 }
 
 // Outlines
@@ -136,6 +140,10 @@ export async function isStale(projectId: number, targetType: string): Promise<bo
   return invoke("is_stale", { projectId, targetType });
 }
 
+export async function listStaleReasons(projectId: number, targetType: string): Promise<StaleReason[]> {
+  return invoke("list_stale_reasons", { projectId, targetType });
+}
+
 export async function clearStale(projectId: number, targetType: string): Promise<void> {
   return invoke("clear_stale", { projectId, targetType });
 }
@@ -180,4 +188,24 @@ export async function polishContent(projectId: number, chapterId: number, preset
 
 export async function polishChapter(projectId: number, presetId: number, sessionId: string): Promise<string> {
   return invoke("polish_chapter", { projectId, presetId, sessionId });
+}
+
+// Snapshots
+export async function createSnapshot(params: {
+  projectId: number;
+  targetType: string;
+  targetId?: number | null;
+  content: string;
+  reason: string;
+}): Promise<number> {
+  return invoke("create_snapshot", params);
+}
+
+export async function listSnapshots(params: {
+  projectId: number;
+  targetType: string;
+  targetId?: number | null;
+  limit?: number;
+}): Promise<ContentSnapshot[]> {
+  return invoke("list_snapshots", params);
 }

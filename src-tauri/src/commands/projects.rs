@@ -1,8 +1,17 @@
 use rusqlite::params;
+use serde::Serialize;
 use tauri::State;
 
 use crate::db::{DbState, get_conn};
 use crate::models::*;
+
+#[derive(Debug, Serialize)]
+pub struct ProjectProgress {
+    pub has_outline: bool,
+    pub character_count: i64,
+    pub chapter_count: i64,
+    pub has_content: bool,
+}
 
 #[tauri::command]
 pub fn create_project(name: String, state: State<'_, DbState>) -> Result<Project, String> {
@@ -127,4 +136,49 @@ pub fn update_project_stage(id: i64, stage: String, state: State<'_, DbState>) -
         .map_err(|e| e.to_string())?;
 
     Ok(project)
+}
+
+#[tauri::command]
+pub fn get_project_progress(project_id: i64, state: State<'_, DbState>) -> Result<ProjectProgress, String> {
+    let conn = get_conn(&state)?;
+
+    let outline_status: String = conn
+        .query_row(
+            "SELECT status FROM outlines WHERE project_id = ?",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|_| "empty".to_string());
+
+    let character_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM characters WHERE project_id = ?",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    let chapter_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM chapters WHERE project_id = ?",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+
+    let has_content: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM contents WHERE project_id = ? AND content != '' AND content IS NOT NULL",
+            params![project_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+
+    Ok(ProjectProgress {
+        has_outline: outline_status != "empty",
+        character_count,
+        chapter_count,
+        has_content,
+    })
 }

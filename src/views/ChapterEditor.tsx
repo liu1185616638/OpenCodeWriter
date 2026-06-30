@@ -3,7 +3,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useChapters } from "@/hooks/useChapters";
 import { useOutline } from "@/hooks/useOutline";
@@ -13,10 +12,15 @@ import { useAI } from "@/contexts/AIContext";
 import { useAppEvents } from "@/hooks/useAppEvents";
 import { reorderChapters } from "@/lib/tauri";
 import { StaleAlert } from "@/components/shared/StaleAlert";
+import { FlowGuide } from "@/components/flow/FlowGuide";
 import { StreamingView } from "@/components/shared/StreamingView";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { WorkspacePageLayout } from "@/components/editor/WorkspacePageLayout";
+import { EditorActionBar } from "@/components/editor/EditorActionBar";
+import { ModelPresetSelect } from "@/components/editor/ModelPresetSelect";
+import { EditorStatusText } from "@/components/editor/EditorStatusText";
 import type { Project } from "@/types";
-import { Trash2, Plus, Sparkles, Square, GripVertical, Cpu, Loader2, WandSparkles } from "lucide-react";
+import { Trash2, Plus, Sparkles, Square, GripVertical, WandSparkles } from "lucide-react";
 import { toast } from "sonner";
 
 export function ChapterEditor({ project }: { project: Project }) {
@@ -144,40 +148,65 @@ export function ChapterEditor({ project }: { project: Project }) {
   if (loading) return <div className="p-6 text-muted-foreground">加载中...</div>;
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
-      {/* Editor Header */}
-      <div className="flex shrink-0 items-center justify-between gap-3 px-4 py-4 sm:px-6">
-        <h2 className="truncate text-lg font-semibold text-foreground">章节目录</h2>
-        <span className="flex shrink-0 items-center gap-1.5 text-sm text-muted-foreground">
+    <WorkspacePageLayout
+      title="章节目录"
+      status={<EditorStatusText generating={generating} idleLabel={`${chapters.length} 章`} />}
+      alerts={
+        <>
+          <FlowGuide stage="chapters" input={{ outlineContent: outline?.content, characterCount: characters.length, chapterCount: chapters.length }} />
+          <StaleAlert projectId={project.id} targetType="chapters" onRegenerate={handleGenerate} />
+          {upstreamIncomplete && (
+            <div className="mx-4 mb-2 sm:mx-6">
+              <Alert>
+                <AlertDescription>
+                  {outlineEmpty ? "请先完成大纲编写" : "请先完成人物设计"}，再生成章节目录
+                </AlertDescription>
+              </Alert>
+            </div>
+          )}
+        </>
+      }
+      error={error ? <p className="text-sm text-destructive">{error}</p> : undefined}
+      actionBar={
+        <EditorActionBar>
+          <Button
+            variant="outline"
+            onClick={() => setShowAddDialog(true)}
+            className="rounded-full px-4 py-2.5 gap-1.5"
+          >
+            <Plus className="h-4 w-4" />新建章节
+          </Button>
           {generating ? (
+            <Button variant="destructive" onClick={cancel} className="rounded-full px-4 py-2.5 gap-1.5">
+              <Square className="h-4 w-4" />停止生成
+            </Button>
+          ) : (
             <>
-              <Loader2 className="h-3.5 w-3.5 text-primary animate-spin" />
-              <span className="text-primary">生成中...</span>
+              <Button onClick={handleGenerate} disabled={!currentPreset || upstreamIncomplete} className="rounded-full px-4 py-2.5 gap-1.5">
+                <Sparkles className="h-4 w-4" />
+                AI 生成目录
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handlePolish}
+                disabled={!currentPreset || chapters.length === 0}
+                className="rounded-full px-4 py-2.5 gap-1.5"
+              >
+                <WandSparkles className="h-4 w-4" />
+                润色打磨
+              </Button>
+              <ModelPresetSelect
+                value={currentPresetId ?? null}
+                presets={presets}
+                onChange={(v) => switchPreset(v)}
+                placeholder="选择模型"
+              />
             </>
-          ) : `${chapters.length} 章`}
-        </span>
-      </div>
-
-      {/* Stale Alert */}
-      <StaleAlert projectId={project.id} targetType="chapters" onRegenerate={handleGenerate} />
-
-      {upstreamIncomplete && (
-        <div className="mx-4 mb-2 sm:mx-6">
-          <Alert>
-            <AlertDescription>
-              {outlineEmpty ? "请先完成大纲编写" : "请先完成人物设计"}，再生成章节目录
-            </AlertDescription>
-          </Alert>
-        </div>
-      )}
-
-      {error && (
-        <div className="mx-4 mb-2 rounded-3xl bg-destructive/10 p-3 sm:mx-6">
-          <p className="text-sm text-destructive">{error}</p>
-        </div>
-      )}
-
-      {/* Main area */}
+          )}
+        </EditorActionBar>
+      }
+    >
+      {/* Main split pane area */}
       <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
         {/* Chapter list with drag reorder */}
         <ScrollArea className="w-64 shrink-0 border-r border-border">
@@ -238,49 +267,6 @@ export function ChapterEditor({ project }: { project: Project }) {
         </ScrollArea>
       </div>
 
-      {/* Action Bar */}
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border/60 px-4 py-3 sm:px-6">
-        <Button
-          variant="outline"
-          onClick={() => setShowAddDialog(true)}
-          className="rounded-full px-4 py-2.5 gap-1.5"
-        >
-          <Plus className="h-4 w-4" />新建章节
-        </Button>
-        {generating ? (
-          <Button variant="destructive" onClick={cancel} className="rounded-full px-4 py-2.5 gap-1.5">
-            <Square className="h-4 w-4" />停止生成
-          </Button>
-        ) : (
-          <>
-            <Button onClick={handleGenerate} disabled={!currentPreset || upstreamIncomplete} className="rounded-full px-4 py-2.5 gap-1.5">
-              <Sparkles className="h-4 w-4" />
-              AI 生成目录
-            </Button>
-            <Button
-              variant="outline"
-              onClick={handlePolish}
-              disabled={!currentPreset || chapters.length === 0}
-              className="rounded-full px-4 py-2.5 gap-1.5"
-            >
-              <WandSparkles className="h-4 w-4" />
-              润色打磨
-            </Button>
-          </>
-        )}
-        <div className="inline-flex h-10 min-w-0 max-w-full shrink-0 items-center gap-2 rounded-full bg-secondary px-4 text-sm text-secondary-foreground">
-          <Cpu className="h-4 w-4 shrink-0" />
-          <Select value={String(currentPresetId ?? "")} onValueChange={(v) => switchPreset(Number(v))}>
-            <SelectTrigger className="h-auto w-[min(240px,55vw)] border-0 bg-transparent p-0 text-secondary-foreground focus:ring-0">
-              <SelectValue placeholder="模型 ▼" />
-            </SelectTrigger>
-            <SelectContent>
-              {presets.map(p => <SelectItem key={p.id} value={String(p.id)}>{p.name} ({p.model_name})</SelectItem>)}
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
-
       {/* New chapter dialog */}
       <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
         <DialogContent>
@@ -303,6 +289,6 @@ export function ChapterEditor({ project }: { project: Project }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </WorkspacePageLayout>
   );
 }

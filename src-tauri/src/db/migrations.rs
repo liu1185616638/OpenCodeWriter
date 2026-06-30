@@ -97,8 +97,39 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 ";
 
+const MIGRATION_002: &str = "
+CREATE TABLE IF NOT EXISTS content_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  target_type TEXT NOT NULL,
+  target_id INTEGER,
+  content TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_content_snapshots_target
+ON content_snapshots(project_id, target_type, target_id, created_at);
+
+CREATE TABLE IF NOT EXISTS generation_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  target_type TEXT NOT NULL,
+  target_id INTEGER,
+  command TEXT NOT NULL,
+  model_name TEXT DEFAULT '',
+  status TEXT NOT NULL,
+  error TEXT DEFAULT '',
+  input_chars INTEGER DEFAULT 0,
+  output_chars INTEGER DEFAULT 0,
+  started_at TEXT DEFAULT (datetime('now')),
+  ended_at TEXT
+);
+";
+
 /// Run all migrations on the database
 pub fn run(conn: &Connection) -> SqlResult<()> {
     conn.execute_batch(MIGRATION_001)?;
+    conn.execute_batch(MIGRATION_002)?;
     Ok(())
 }

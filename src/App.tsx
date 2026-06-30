@@ -16,6 +16,7 @@ import { ContentEditor } from "@/views/ContentEditor";
 import { Settings } from "@/views/Settings";
 import { useTheme } from "@/hooks/useTheme";
 import { useKeybindings } from "@/hooks/useKeybindings";
+import { updateProjectStage } from "@/lib/tauri";
 import type { Project, CreationStage } from "@/types";
 
 type AppView = "setup" | "project-list" | "workspace" | "settings";
@@ -112,10 +113,15 @@ function AppInner() {
     setView("workspace");
   };
 
-  const handleSelectStage = (stage: CreationStage) => {
+  const handleSelectStage = useCallback((stage: CreationStage) => {
     setCurrentStage(stage);
     setView("workspace");
-  };
+    // 持久化到数据库，下次打开项目时恢复
+    if (currentProject) {
+      updateProjectStage(currentProject.id, stage).catch(() => { /* ignore */ });
+      setCurrentProject(prev => prev ? { ...prev, current_stage: stage } : null);
+    }
+  }, [currentProject]);
 
   const handleBackToProjects = () => {
     setCurrentProject(null);

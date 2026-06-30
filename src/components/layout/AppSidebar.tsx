@@ -33,7 +33,7 @@ import {
   PenLine, Cpu, Keyboard, Info,
   FolderOpen, Loader2,
 } from "lucide-react";
-import { invoke } from "@tauri-apps/api/core";
+import { getProjectProgress, isStale } from "@/lib/tauri";
 
 const stages: { key: CreationStage; label: string; icon: React.ElementType }[] = [
   { key: "outline", label: "大纲", icon: FileText },
@@ -251,31 +251,49 @@ export function AppSidebar({
 
     async function fetchStatuses() {
       const stageOrder: CreationStage[] = ["outline", "characters", "chapters", "content"];
-      const currentIdx = stageOrder.indexOf(currentProject!.current_stage as CreationStage);
       const statuses: Record<string, StageStatus> = {};
 
-      for (const stage of stageOrder) {
-        const stageIdx = stageOrder.indexOf(stage);
+      // 获取实际内容数量（一次请求）
+      let progress = { has_outline: false, character_count: 0, chapter_count: 0, has_content: false };
+      try {
+        progress = await getProjectProgress(currentProject!.id);
+      } catch { /* ignore */ }
 
+      const hasContent: Record<CreationStage, boolean> = {
+        outline: progress.has_outline,
+        characters: progress.character_count > 0,
+        chapters: progress.chapter_count > 0,
+        content: progress.has_content,
+      };
+
+      for (const stage of stageOrder) {
+        // 优先检查 stale 状态
+        let stale = false;
         try {
-          const isStale = await invoke<boolean>("is_stale", { projectId: currentProject!.id, targetType: staleTargetMap[stage] });
-          if (isStale) {
-            statuses[stage] = "stale";
-            continue;
-          }
+          stale = await isStale(currentProject!.id, staleTargetMap[stage]);
         } catch { /* ignore */ }
 
-        if (stageIdx < currentIdx) statuses[stage] = "done";
-        else if (stageIdx === currentIdx) statuses[stage] = "active";
-        else if (stageIdx === currentIdx + 1) statuses[stage] = "ready";
-        else statuses[stage] = "pending";
+        if (stale) {
+          statuses[stage] = "stale";
+        } else if (hasContent[stage]) {
+          // 有实际内容 → done（当前选中阶段会通过按钮的 active 样式高亮，不需要额外 active 圆环）
+          statuses[stage] = "done";
+        } else if (stage === currentStage) {
+          // 当前正在编辑但尚无内容
+          statuses[stage] = "active";
+        } else {
+          // 检查前置阶段是否已完成
+          const idx = stageOrder.indexOf(stage);
+          const prevDone = idx === 0 || hasContent[stageOrder[idx - 1]];
+          statuses[stage] = prevDone ? "ready" : "pending";
+        }
       }
 
       setStageStatuses(statuses as Record<CreationStage, StageStatus>);
     }
 
     fetchStatuses();
-  }, [currentProject]);
+  }, [currentProject, currentStage]);
 
   if (view === "settings") {
     return (

@@ -2,10 +2,9 @@ import { useEffect, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useCharacters } from "@/hooks/useCharacters";
 import { useOutline } from "@/hooks/useOutline";
@@ -13,9 +12,15 @@ import { useSettings } from "@/hooks/useSettings";
 import { useAI } from "@/contexts/AIContext";
 import { useAppEvents } from "@/hooks/useAppEvents";
 import { StaleAlert } from "@/components/shared/StaleAlert";
+import { FlowGuide } from "@/components/flow/FlowGuide";
 import { StreamingView } from "@/components/shared/StreamingView";
+import { WorkspacePageLayout } from "@/components/editor/WorkspacePageLayout";
+import { AppScrollArea } from "@/components/shared/AppScrollArea";
+import { EditorActionBar } from "@/components/editor/EditorActionBar";
+import { ModelPresetSelect } from "@/components/editor/ModelPresetSelect";
+import { EditorStatusText } from "@/components/editor/EditorStatusText";
 import type { Project, Character, CharacterTier } from "@/types";
-import { Sparkles, Trash2, ChevronDown, Square, Cpu, UserPlus, Shield, Star, Loader2 } from "lucide-react";
+import { Sparkles, Trash2, ChevronDown, Square, UserPlus, Shield, Star } from "lucide-react";
 import { toast } from "sonner";
 
 const tierLabels: Record<CharacterTier, string> = {
@@ -227,26 +232,10 @@ export function CharacterEditor({ project }: { project: Project }) {
 
   if (loading) return <div className="p-6 text-muted-foreground">加载中...</div>;
 
-  return (
-    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
-      {/* Editor Header */}
-      <div className="flex shrink-0 items-center justify-between gap-3 px-4 py-4 sm:px-6">
-        <div className="min-w-0">
-          <h2 className="truncate text-lg font-semibold text-foreground">人物小传</h2>
-          <p className="mt-0.5 hidden text-xs text-muted-foreground sm:block">维护主要角色、配角和关键人物关系</p>
-        </div>
-        <span className="flex shrink-0 items-center gap-1.5 text-sm text-muted-foreground">
-          {generating ? (
-            <>
-              <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
-              <span className="text-primary">生成中...</span>
-            </>
-          ) : `${characters.length} 个角色`}
-        </span>
-      </div>
-
+  const alertsContent = (
+    <>
+      <FlowGuide stage="characters" input={{ outlineContent: outline?.content, characterCount: characters.length }} />
       <StaleAlert projectId={project.id} targetType="characters" onRegenerate={handleGenerate} />
-
       {outlineEmpty && (
         <div className="mx-4 mb-2 sm:mx-6">
           <Alert>
@@ -254,7 +243,6 @@ export function CharacterEditor({ project }: { project: Project }) {
           </Alert>
         </div>
       )}
-
       {error && (
         <div className="mx-4 mb-2 sm:mx-6">
           <Alert variant="destructive">
@@ -262,10 +250,46 @@ export function CharacterEditor({ project }: { project: Project }) {
           </Alert>
         </div>
       )}
+    </>
+  );
 
-      {/* Three-tier list — adaptive scroll area */}
-      <ScrollArea className="min-h-0 min-w-0 flex-1 overflow-x-hidden px-4 py-4 sm:px-8 sm:py-5">
-        <div className="w-full min-w-0 max-w-full space-y-6 pr-2 sm:pr-3">
+  const actionBarContent = (
+    <EditorActionBar>
+      {generating ? (
+        <Button variant="destructive" onClick={cancel} className="rounded-full px-4 py-2.5 gap-1.5">
+          <Square className="h-4 w-4" />停止生成
+        </Button>
+      ) : (
+        <Button onClick={handleGenerate} disabled={!currentPreset || outlineEmpty} className="rounded-full px-4 py-2.5 gap-1.5">
+          <Sparkles className="h-4 w-4" />
+          AI 生成人物
+        </Button>
+      )}
+      <ModelPresetSelect
+        value={currentPresetId ?? null}
+        presets={presets}
+        onChange={(v) => switchPreset(v)}
+        placeholder="选择模型"
+      />
+      {!generating && (
+        <Button variant="outline" onClick={() => setShowAddDialog(true)} className="rounded-full px-4 py-2.5 gap-1.5">
+          <UserPlus className="h-4 w-4" />
+          手动添加
+        </Button>
+      )}
+    </EditorActionBar>
+  );
+
+  return (
+    <WorkspacePageLayout
+      title="人物小传"
+      description="维护主要角色、配角和关键人物关系"
+      status={<EditorStatusText generating={generating} idleLabel={`${characters.length} 个角色`} />}
+      alerts={alertsContent}
+      actionBar={actionBarContent}
+    >
+      <AppScrollArea>
+        <div className="w-full min-w-0 max-w-full space-y-6">
           {generating && generatingStage === "characters" && (
             <StreamingView
               content={streamedContent}
@@ -304,36 +328,7 @@ export function CharacterEditor({ project }: { project: Project }) {
             <p className="py-8 text-center text-muted-foreground">暂无人物，点击 AI 生成或手动添加</p>
           )}
         </div>
-      </ScrollArea>
-
-      {/* Action Bar — AI + Model + 手动添加 */}
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border/60 px-4 py-3 sm:px-6">
-        {generating ? (
-          <Button variant="destructive" onClick={cancel} className="rounded-full px-4 py-2.5 gap-1.5">
-            <Square className="h-4 w-4" />停止生成
-          </Button>
-        ) : (
-          <Button onClick={handleGenerate} disabled={!currentPreset || outlineEmpty} className="rounded-full px-4 py-2.5 gap-1.5">
-            <Sparkles className="h-4 w-4" />
-            AI 生成人物
-          </Button>
-        )}
-        <div className="inline-flex h-10 min-w-0 max-w-full shrink-0 items-center gap-2 rounded-full bg-secondary px-4 text-sm text-secondary-foreground">
-          <Cpu className="h-4 w-4 shrink-0" />
-          <Select value={String(currentPresetId ?? "")} onValueChange={(v) => switchPreset(Number(v))}>
-            <SelectTrigger className="h-auto w-[min(240px,55vw)] border-0 bg-transparent p-0 text-secondary-foreground focus:ring-0">
-              <SelectValue placeholder="模型 ▼" />
-            </SelectTrigger>
-            <SelectContent>
-              {presets.map(p => <SelectItem key={p.id} value={String(p.id)}>{p.name} ({p.model_name})</SelectItem>)}
-            </SelectContent>
-          </Select>
-        </div>
-        <Button variant="outline" onClick={() => setShowAddDialog(true)} className="rounded-full px-4 py-2.5 gap-1.5">
-          <UserPlus className="h-4 w-4" />
-          手动添加
-        </Button>
-      </div>
+      </AppScrollArea>
 
       {/* New character dialog — description-first approach */}
       <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
@@ -379,6 +374,6 @@ export function CharacterEditor({ project }: { project: Project }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </WorkspacePageLayout>
   );
 }

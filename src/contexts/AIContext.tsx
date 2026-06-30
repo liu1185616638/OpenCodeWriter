@@ -1,6 +1,7 @@
 import { createContext, useContext, useRef, useCallback, useState, useEffect, type ReactNode } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import type { GenerationStatus, GenerationTaskMeta } from "../types/ai";
 
 // =============================================================================
 // AI Context — lift useAI state to App level so it survives tab switches
@@ -41,6 +42,11 @@ interface AiContextValue {
   thinkingContent: string;
   error: string | null;
   generatingStage: string | undefined;
+  generationStatus: GenerationStatus;
+  generationMeta: GenerationTaskMeta | null;
+  generatedCharCount: number;
+  elapsedMs: number;
+  resetGeneration: () => void;
   generate: (options: GenerateOptions | string, legacyArgs?: Record<string, unknown>) => Promise<void>;
   cancel: () => void;
 }
@@ -53,12 +59,17 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const [thinkingContent, setThinkingContent] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [generatingStage, setGeneratingStage] = useState<string | undefined>(undefined);
+  const [generationStatus, setGenerationStatus] = useState<GenerationStatus>("idle");
+  const [generationMeta, setGenerationMeta] = useState<GenerationTaskMeta | null>(null);
+  const [generatedCharCount, setGeneratedCharCount] = useState(0);
+  const [elapsedMs, setElapsedMs] = useState(0);
   const sessionIdRef = useRef<string | null>(null);
   const unlistenFns = useRef<UnlistenFn[]>([]);
   const onCompleteRef = useRef<GenerateOptions["onComplete"]>(undefined);
   const onErrorRef = useRef<GenerateOptions["onError"]>(undefined);
   const streamedContentRef = useRef("");
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Keep ref in sync so onComplete can access latest content
   const updateStreamedContent = useCallback((updater: string | ((prev: string) => string)) => {
@@ -76,6 +87,13 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const cleanup = useCallback(() => {
     unlistenFns.current.forEach(fn => fn());
     unlistenFns.current = [];
+  }, []);
+
+  const clearElapsedTimer = useCallback(() => {
+    if (elapsedTimerRef.current) {
+      clearInterval(elapsedTimerRef.current);
+      elapsedTimerRef.current = null;
+    }
   }, []);
 
   const generate = useCallback(async (options: GenerateOptions | string, legacyArgs?: Record<string, unknown>) => {
@@ -99,11 +117,27 @@ export function AiProvider({ children }: { children: ReactNode }) {
 
     // Cleanup previous listeners
     cleanup();
+    clearElapsedTimer();
     setGenerating(true);
     setGeneratingStage(stage);
+    setGenerationStatus("generating");
+    setGenerationMeta({
+      stage,
+      command,
+      presetId: args.presetId as number | undefined,
+      modelName: args.modelName as string | undefined,
+      startedAt: Date.now(),
+    });
+    setGeneratedCharCount(0);
+    setElapsedMs(0);
     updateStreamedContent("");
     updateThinkingContent("");
     setError(null);
+
+    // Start elapsed time tracker
+    elapsedTimerRef.current = setInterval(() => {
+      setElapsedMs(prev => prev + 500);
+    }, 500);
 
     onCompleteRef.current = onComplete;
     onErrorRef.current = onError;
@@ -124,6 +158,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
           updateThinkingContent(prev => prev + chunk);
         } else {
           updateStreamedContent(prev => prev + chunk);
+          setGeneratedCharCount(prev => prev + chunk.length);
         }
       }
     });
@@ -135,8 +170,11 @@ export function AiProvider({ children }: { children: ReactNode }) {
           clearTimeout(fallbackTimerRef.current);
           fallbackTimerRef.current = null;
         }
+        clearElapsedTimer();
         setGenerating(false);
         setGeneratingStage(undefined);
+        setGenerationStatus("completed");
+        setGenerationMeta(prev => prev ? { ...prev, endedAt: Date.now() } : null);
         cleanup();
         onCompleteRef.current?.(streamedContentRef.current);
       }
@@ -144,9 +182,12 @@ export function AiProvider({ children }: { children: ReactNode }) {
 
     const errorUnlisten = await listen<AiErrorPayload>("ai-error", (event) => {
       if (event.payload.session_id === sessionIdRef.current) {
+        clearElapsedTimer();
         setError(event.payload.error);
         setGenerating(false);
         setGeneratingStage(undefined);
+        setGenerationStatus("failed");
+        setGenerationMeta(prev => prev ? { ...prev, endedAt: Date.now() } : null);
         cleanup();
         onErrorRef.current?.(event.payload.error);
       }
@@ -160,8 +201,11 @@ export function AiProvider({ children }: { children: ReactNode }) {
       // force completion after 200ms after invoke returns.
       fallbackTimerRef.current = setTimeout(() => {
         if (sessionIdRef.current === sessionId) {
+          clearElapsedTimer();
           setGenerating(false);
           setGeneratingStage(undefined);
+          setGenerationStatus("completed");
+          setGenerationMeta(prev => prev ? { ...prev, endedAt: Date.now() } : null);
           cleanup();
           onCompleteRef.current?.(streamedContentRef.current);
         }
@@ -171,22 +215,39 @@ export function AiProvider({ children }: { children: ReactNode }) {
         clearTimeout(fallbackTimerRef.current);
         fallbackTimerRef.current = null;
       }
+      clearElapsedTimer();
       setError(String(e));
       setGenerating(false);
       setGeneratingStage(undefined);
+      setGenerationStatus("failed");
+      setGenerationMeta(prev => prev ? { ...prev, endedAt: Date.now() } : null);
       cleanup();
       onErrorRef.current?.(String(e));
     }
-  }, [cleanup, updateStreamedContent, updateThinkingContent]);
+  }, [cleanup, clearElapsedTimer, updateStreamedContent, updateThinkingContent]);
 
   const cancel = useCallback(() => {
+    clearElapsedTimer();
     setGenerating(false);
     setGeneratingStage(undefined);
+    setGenerationStatus("cancelled");
     cleanup();
-  }, [cleanup]);
+  }, [cleanup, clearElapsedTimer]);
+
+  const resetGeneration = useCallback(() => {
+    setGenerationStatus("idle");
+    setGenerationMeta(null);
+    setGeneratedCharCount(0);
+    setElapsedMs(0);
+  }, []);
 
   // Cleanup on unmount
-  useEffect(() => cleanup, [cleanup]);
+  useEffect(() => {
+    return () => {
+      cleanup();
+      clearElapsedTimer();
+    };
+  }, [cleanup, clearElapsedTimer]);
 
   return (
     <AiContext.Provider value={{
@@ -195,6 +256,11 @@ export function AiProvider({ children }: { children: ReactNode }) {
       thinkingContent,
       error,
       generatingStage,
+      generationStatus,
+      generationMeta,
+      generatedCharCount,
+      elapsedMs,
+      resetGeneration,
       generate,
       cancel,
     }}>
