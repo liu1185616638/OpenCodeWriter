@@ -188,6 +188,7 @@ impl ContextBuilder {
         chapter_summary: &str,
         style_config: Option<&StyleConfig>,
         previous_content: &str,
+        adjacent_chapters_context: &str,
     ) -> Vec<ChatMessage> {
         let stopwords_hint = self.format_stopwords_hint();
 
@@ -217,6 +218,15 @@ impl ContextBuilder {
             )
         };
 
+        let adjacent_context = adjacent_chapters_context.trim();
+        let adjacent_section = if adjacent_context.is_empty() {
+            String::new()
+        } else if adjacent_context.starts_with("## 相邻章节衔接") {
+            format!("{}\n\n", adjacent_context)
+        } else {
+            format!("## 相邻章节衔接\n\n{}\n\n", adjacent_context)
+        };
+
         vec![
             ChatMessage {
                 role: "system".to_string(),
@@ -227,7 +237,8 @@ impl ContextBuilder {
                     ## 输出格式要求\n\n\
                     先在 <thinking> 标签内构思场景布局和对话走向，\
                     然后在 </thinking> 之后输出正式正文。\
-                    正文必须完整，写到章节结尾，不可中途截断。",
+                    正文必须完整，写到章节结尾，不可中途截断。\
+                    每章必须和相邻章节形成连续阅读体验，避免重复已完成情节。",
                     resources::METHODOLOGY,
                     stopwords_hint,
                 ),
@@ -239,6 +250,7 @@ impl ContextBuilder {
                     ## 小说大纲\n\n{}\n\n\
                     ## 人物信息\n\n{}\n\n\
                     {}\
+                    {}\
                     {}\n\n\
                     ## 当前章节\n\n\
                     标题：{}\n\
@@ -246,6 +258,7 @@ impl ContextBuilder {
                     ## 正文写作模板\n\n{}\n\n\
                     请先在 <thinking> 标签内构思场景和对话走向，\
                     然后在 </thinking> 之后严格按照大纲和章节摘要的方向写作，保持人物语言风格一致。\
+                    必须承接上一章的状态、情绪和未完成线索，铺垫下一章需要进入的事件，避免重复上一章或下一章已经承担的内容。\
                     以场景为单位推进，对话与叙述交替，节奏自然。\
                     章节结尾设置悬念或情感高潮。\
                     必须写到章节结尾，不可中途截断。\
@@ -253,6 +266,7 @@ impl ContextBuilder {
                     outline,
                     characters_summary,
                     previous_section,
+                    adjacent_section,
                     style_section,
                     chapter_title,
                     chapter_summary,
@@ -443,5 +457,34 @@ impl ContextBuilder {
             "以下词汇在写作中严禁使用，它们是典型的AI生成痕迹：\n{}",
             self.stopwords.join("、")
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn content_context_includes_adjacent_chapter_continuity_requirements() {
+        let builder = ContextBuilder::new();
+        let messages = builder.build_content_context(
+            "主线大纲",
+            "人物关系",
+            "风雨前夜",
+            "主角发现旧案线索，但还没有揭开真相。",
+            None,
+            "上一章：主角在码头拿到半张船票。",
+            "上一章《码头疑云》：主角拿到半张船票，决定追查失踪货船。\n下一章《夜访仓库》：主角将顺着船票线索潜入仓库。",
+        );
+
+        let user_prompt = &messages[1].content;
+        assert!(user_prompt.contains("上一章正文（供衔接参考）"));
+        assert!(user_prompt.contains("上一章：主角在码头拿到半张船票。"));
+        assert!(user_prompt.contains("相邻章节衔接"));
+        assert!(user_prompt.contains("码头疑云"));
+        assert!(user_prompt.contains("夜访仓库"));
+        assert!(user_prompt.contains("承接上一章"));
+        assert!(user_prompt.contains("铺垫下一章"));
+        assert!(user_prompt.contains("避免重复"));
     }
 }

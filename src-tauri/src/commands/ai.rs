@@ -139,6 +139,59 @@ fn get_previous_content(
     }
 }
 
+fn get_adjacent_chapters_context(
+    state: &State<'_, DbState>,
+    project_id: i64,
+    chapter_id: i64,
+) -> Result<String, String> {
+    let conn = get_conn(state)?;
+    let sort_order: i64 = conn
+        .query_row(
+            "SELECT sort_order FROM chapters WHERE id = ?1",
+            params![chapter_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+
+    let previous = conn
+        .query_row(
+            "SELECT title, summary FROM chapters WHERE project_id = ?1 AND sort_order < ?2 ORDER BY sort_order DESC LIMIT 1",
+            params![project_id, sort_order],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    let next = conn
+        .query_row(
+            "SELECT title, summary FROM chapters WHERE project_id = ?1 AND sort_order > ?2 ORDER BY sort_order ASC LIMIT 1",
+            params![project_id, sort_order],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    Ok(format_adjacent_chapters_context(previous, next))
+}
+
+fn format_adjacent_chapters_context(
+    previous: Option<(String, String)>,
+    next: Option<(String, String)>,
+) -> String {
+    if previous.is_none() && next.is_none() {
+        return String::new();
+    }
+
+    let mut context = String::from("## 相邻章节衔接\n\n");
+    if let Some((title, summary)) = previous {
+        context.push_str(&format!("上一章《{}》：{}\n", title, summary));
+    }
+    if let Some((title, summary)) = next {
+        context.push_str(&format!("下一章《{}》：{}\n", title, summary));
+    }
+    context
+}
+
 fn get_style_config(
     state: &State<'_, DbState>,
     project_id: i64,
@@ -675,6 +728,7 @@ pub async fn generate_content(
     let (chapter_title, chapter_summary, _) = get_chapter_info(&state, chapter_id)?;
     let style_config = get_style_config(&state, project_id)?;
     let previous_content = get_previous_content(&state, project_id, chapter_id)?;
+    let adjacent_chapters_context = get_adjacent_chapters_context(&state, project_id, chapter_id)?;
     let preset = get_preset(&state, preset_id)?;
     drop(state);
 
@@ -686,6 +740,7 @@ pub async fn generate_content(
         &chapter_summary,
         style_config.as_ref(),
         &previous_content,
+        &adjacent_chapters_context,
     );
     let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name);
 
@@ -801,4 +856,23 @@ pub async fn polish_chapter(
     eprintln!("[polish_chapter] updated {} chapters", count);
 
     Ok(session_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adjacent_chapters_context_formats_previous_and_next_chapters() {
+        let context = format_adjacent_chapters_context(
+            Some(("码头疑云".to_string(), "主角拿到半张船票，决定追查失踪货船。".to_string())),
+            Some(("夜访仓库".to_string(), "主角将顺着船票线索潜入仓库。".to_string())),
+        );
+
+        assert!(context.contains("## 相邻章节衔接"));
+        assert!(context.contains("上一章《码头疑云》"));
+        assert!(context.contains("主角拿到半张船票"));
+        assert!(context.contains("下一章《夜访仓库》"));
+        assert!(context.contains("潜入仓库"));
+    }
 }

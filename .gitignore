@@ -11,3 +11,4 @@ dist/
 .opencode-writer/
 bun.lock
 opencode-writer.exe
+.claude/
