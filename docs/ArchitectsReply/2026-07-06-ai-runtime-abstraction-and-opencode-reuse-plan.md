@@ -1,26 +1,39 @@
-# 2026-07-06 当前开发计划实现核对与 AI Runtime 抽象新增开发计划
+# 2026-07-06 AI Runtime 抽象与 SDK-first 底层适配开发计划（修订版）
 
-## 0. 用户问题
+## 0. 用户最新修正
 
-查看当前开发计划是否都已经实现，然后新增开发计划：
-
-```text
-为所有 AI 调用统一走 OpenCodeWriter 自己定义的 AiRuntime 抽象；
-业务逻辑继续由 OpenCodeWriter 控制；
-opencode-ai SDK 作为 Agent / Tool / MCP Runtime / Skills 等可以复用组件的地方。
-```
-
-## 1. 核对结论
-
-根据 master 分支最新代码，当前此前规划的大部分功能已经落地，尤其是 P0 与后续 V0.3/V0.4/V0.5/V0.6 的很多基础能力都已经进入代码。
-
-但新的 AI Runtime 抽象还没有实现，当前 AI 调用仍然是：
+用户明确说明：
 
 ```text
-commands/ai.rs -> AiClient -> OpenAI-compatible /chat/completions
+我想要的不是接管小说业务主流程，
+而是做一个最底层的适配，
+让 SDK 来帮我将对 AI 的操作都完成，
+我只需要在上面搭建业务逻辑，
+以及在业务执行过程中调用 SDK 来实现各种功能，
+例如加载 skills，mcp，思维链，工具调用等等。
 ```
 
-也就是说：
+因此，本文对今天的开发计划进行修订。
+
+核心变化：
+
+```text
+不是：OpenCode SDK 只是未来实验能力
+而是：OpenCodeWriter 应建立 SDK-first 的底层 AI 能力适配层
+```
+
+但同时保持一个边界：
+
+```text
+SDK 负责 AI 操作执行；
+OpenCodeWriter 负责小说业务逻辑。
+```
+
+---
+
+## 1. 当前实现状态核对
+
+当前 master 已经实现了大量业务能力：
 
 ```text
 P0 舒适性与便捷性：基本已实现
@@ -29,820 +42,409 @@ P0 舒适性与便捷性：基本已实现
 世界与角色资产：已实现核心表、类型、入口
 轻量知识库：已实现 SQLite FTS 基础表与命令入口
 模型路由 / 任务表：已实现基础数据结构和命令入口
-AiRuntime 抽象：未实现，是下一阶段重点
-OpenCode SDK 接入：未实现，只停留在架构分析文档
 ```
 
-注意：本核对基于 GitHub master 代码读取，不等同于本地执行 `npm run build` 或 `npm run tauri dev` 的运行验收。
-
----
-
-## 2. 当前计划实现状态核对
-
-### 2.1 P0：统一布局、滚动、自适应、底部操作栏
-
-状态：**已实现基础组件。**
-
-已存在组件：
+但当前 AI 调用仍然是：
 
 ```text
-src/components/editor/WorkspacePageLayout.tsx
-src/components/editor/EditorActionBar.tsx
-src/components/editor/ModelPresetSelect.tsx
-src/components/editor/ResponsiveSplitPane.tsx
-src/components/shared/AppScrollArea.tsx
+commands/ai.rs -> AiClient -> OpenAI-compatible /chat/completions
 ```
 
-判断：P0 的 UI 基础骨架已经落地。
-
-后续仍需人工检查：
-
-- 四个主要编辑页面是否全部完全迁移到统一布局。
-- 小窗口、暗色模式、长内容滚动是否实际体验稳定。
-- 侧栏折叠和页面滚动是否存在边界 bug。
-
-### 2.2 P0：AI 生成过程可控化
-
-状态：**已实现核心状态与组件。**
-
-已存在：
-
-```text
-src/types/ai.ts
-src/components/ai/GenerateConfirmDialog.tsx
-src/components/ai/GenerationStatusBar.tsx
-src/components/ai/GenerationRecoveryPanel.tsx
-```
-
-`AIContext` 已包含：
-
-```text
-generationStatus
-generationMeta
-generatedCharCount
-elapsedMs
-resetGeneration
-```
-
-判断：生成状态、耗时、字数、取消、失败恢复的基础能力已经落地。
-
-后续仍需检查：
-
-- 大纲、正文、人物、章节是否都接入了确认弹窗。
-- 追加 / 替换 / 草稿模式是否全部可用。
-- 停止生成后是否真的不会被后续流覆盖。
-- 后端是否支持真正 abort；当前更多是前端停止监听层面的体验。
-
-### 2.3 P0：自动保存与版本快照
-
-状态：**基础已实现。**
-
-已存在：
-
-```text
-src/hooks/useAutosave.ts
-src/components/editor/SnapshotPanel.tsx
-```
-
-数据库已存在：
-
-```text
-content_snapshots
-generation_logs
-```
-
-后端已注册：
-
-```text
-create_snapshot
-list_snapshots
-delete_old_snapshots
-list_generation_logs
-```
-
-判断：自动保存与快照基础完成。
-
-后续仍需检查：
-
-- 是否所有编辑器都启用了 autosave。
-- AI 生成前、润色前是否稳定创建快照。
-- 恢复快照后是否自动保存。
-- 快照清理是否有调用，避免数据无限增长。
-
-### 2.4 P0：下一步引导与过时原因
-
-状态：**已实现基础组件与状态类型。**
-
-已存在：
-
-```text
-src/components/flow/FlowGuide.tsx
-src/lib/stageProgress.ts
-StaleReason 类型
-list_stale_reasons 命令注册
-```
-
-判断：流程引导与过时原因基础完成。
-
-后续仍需检查：
-
-- 每个页面是否都显示 FlowGuide。
-- 过时原因是否映射成用户能理解的中文文案。
-- 过时状态是否有“清除/重新生成/忽略”操作闭环。
-
----
-
-## 3. 后续规划实现状态核对
-
-### 3.1 开书定盘 / 自动导演轻量版
-
-状态：**已实现核心入口。**
-
-`App.tsx` 已加入：
-
-```text
-IdeaToProjectWizard
-ProjectProfileView
-```
-
-并扩展了 `AppView`：
-
-```text
-setup | project-list | workspace | settings | idea-wizard | project-profile
-```
-
-后端已注册：
-
-```text
-generate_idea_directions
-generate_outline_from_direction
-get_project_profile
-save_project_profile
-```
-
-类型已加入：
-
-```text
-ProjectProfile
-IdeaDirection
-```
-
-判断：V0.3 开书定盘主能力已进入实现。
-
-后续仍需检查：
-
-- 方向候选是否能创建项目并写入 profile。
-- profile 是否真正注入大纲、人物、章节、正文 prompt。
-- 项目设定页是否能从侧栏稳定进入。
-
-### 3.2 章节执行闭环
-
-状态：**已实现后端与类型基础。**
-
-章节类型已增强：
-
-```text
-goal
-conflict_level
-hook
-payoff
-must_avoid
-target_word_count
-```
-
-后端已注册：
-
-```text
-review_chapter_content
-repair_chapter_content
-batch_generate_chapters
-list_chapter_reviews
-```
-
-数据库已加入：
-
-```text
-chapter_reviews
-```
-
-判断：V0.4 的章节任务单、审核、修复、批量生成基础已具备。
-
-后续仍需检查：
-
-- 前端是否有完整 ChapterQualityPanel 或等效面板。
-- 审核输出是否结构化保存。
-- 修复前后是否有 diff 或快照保护。
-- 批量生成是否具备失败中断恢复。
-
-### 3.3 世界与角色资产
-
-状态：**已实现核心数据结构、命令与页面入口。**
-
-`CreationStage` 已扩展：
-
-```text
-outline | characters | chapters | content | world | knowledge
-```
-
-`App.tsx` 已加入：
-
-```text
-WorldEditor
-KnowledgeEditor
-```
-
-数据库已加入：
-
-```text
-world_items
-character_relations
-character_states
-story_facts
-foreshadows
-```
-
-类型已加入：
-
-```text
-WorldItem
-CharacterRelation
-CharacterState
-StoryFact
-Foreshadow
-```
-
-后端已注册：
-
-```text
-list_world_items
-create_world_item
-update_world_item
-delete_world_item
-list_character_relations
-create_character_relation
-update_character_relation
-delete_character_relation
-list_character_states
-create_character_state
-delete_character_state
-list_story_facts
-create_story_fact
-update_story_fact
-delete_story_fact
-list_foreshadows
-create_foreshadow
-update_foreshadow
-delete_foreshadow
-chapter_aftercare
-```
-
-判断：V0.5 世界观、角色关系、状态回灌、事实、伏笔账本基础已落地。
-
-后续仍需检查：
-
-- 正文生成是否使用 world_items / story_facts / foreshadows。
-- aftercare 是否自动或半自动触发。
-- 新人物候选是否有待确认流程。
-- 世界观页面是否和正文生成有明确联动。
-
-### 3.4 轻量知识库
-
-状态：**已实现 SQLite FTS 基础。**
-
-数据库已加入：
-
-```text
-knowledge_sources
-knowledge_chunks FTS5
-```
-
-类型已加入：
-
-```text
-KnowledgeSource
-KnowledgeChunk
-```
-
-后端已注册：
-
-```text
-list_knowledge_sources
-import_knowledge
-delete_knowledge_source
-search_knowledge
-```
-
-判断：V0.6 轻量知识库已经具备雏形。
-
-后续仍需检查：
-
-- 是否支持文件导入，而不只是粘贴文本。
-- 生成正文时是否自动检索并注入相关 chunks。
-- 是否有检索命中可视化。
-- 是否有 chunk 重建和清理机制。
-
-### 3.5 写法规则、模型路由、任务中心
-
-状态：**基础数据结构与命令已实现。**
-
-数据库已加入：
-
-```text
-style_rules
-model_routes
-jobs
-```
-
-类型已加入：
-
-```text
-StyleRule
-ModelRoute
-Job
-```
-
-后端已注册：
-
-```text
-list_style_rules
-create_style_rule
-update_style_rule
-delete_style_rule
-list_model_routes
-upsert_model_route
-list_jobs
-create_job
-update_job_status
-delete_job
-extract_style_rules
-analyze_text
-```
-
-判断：这些能力已经超过最初 P0 范围，属于后续规划的基础落地。
-
-后续仍需检查：
-
-- 模型路由是否已经被所有 AI 命令使用。
-- fallback 模型是否真正可用。
-- jobs 是否只是记录表，还是已经承担任务队列。
-- style_rules 是否真正注入生成和审核链路。
-
----
-
-## 4. 当前尚未实现的关键部分：AiRuntime 抽象
-
-当前代码仍直接依赖：
-
-```rust
-use crate::ai::client::{AiClient, ChatMessage};
-```
-
-当前模型调用仍在 `AiClient::stream_chat()` 中完成，直接拼接：
-
-```rust
-{api_base}/chat/completions
-```
-
-并直接通过 reqwest 发送 OpenAI-compatible 请求。
-
-这说明还没有：
+尚未实现：
 
 ```text
 AiRuntime trait
-OpenAICompatibleRuntime
+SdkBackedRuntime
 OpenCodeRuntime
 ToolRuntime
-SkillsRegistry
-MockRuntime
+McpRuntime
+SkillsRuntime
+BusinessToolRegistry
+SkillRegistry
+McpRegistry
 ```
 
-因此，下一阶段新增开发计划应围绕“AI Runtime 抽象层”展开。
+因此，下一阶段重点应该从“继续堆业务功能”切换为：
+
+```text
+统一 AI 底层能力适配。
+```
 
 ---
 
-# 5. 新增开发计划：AI Runtime 抽象与 OpenCode 复用组件接入
+## 2. 修订后的目标架构
 
-## 5.1 目标
-
-新增目标不是简单替换 SDK，而是建立 OpenCodeWriter 自己的 AI Runtime 架构：
+目标不是让 SDK 管小说，而是让 SDK 管 AI。
 
 ```text
-所有 AI 调用统一走 OpenCodeWriter 自己定义的 AiRuntime 抽象；
-业务逻辑继续由 OpenCodeWriter 控制；
-opencode-ai SDK / OpenCode Server 作为 Agent / Tool / MCP Runtime / Skills 等可复用组件来源。
-```
-
-核心原则：
-
-1. 小说业务流程不能交给 Agent 自由决策。
-2. 大纲、人物、章节、正文、审核、回灌仍由业务代码编排。
-3. Runtime 只负责模型调用、流式输出、工具调用、MCP 调度、Skills 调用。
-4. OpenCode 相关能力必须通过适配器接入，不能污染业务层。
-5. 默认实现仍为 OpenAI-compatible，保证现有功能不退化。
-
----
-
-## 5.2 新架构总览
-
-目标结构：
-
-```text
-commands/ai.rs
+OpenCodeWriter UI
+  ↓
+小说业务服务层 Novel Business Services
   ↓
 AiTaskService
   ↓
-ContextBuilder / PromptBuilder
+AiRuntime 抽象
   ↓
-AiRuntimeManager
+SdkBackedRuntime / OpenCodeRuntime
   ↓
-AiRuntime trait
-  ├─ OpenAICompatibleRuntime      默认实现
-  ├─ OpenCodeRuntime              实验实现
-  ├─ ToolRuntime                  本地业务工具调用
-  ├─ McpRuntime                   未来 MCP 适配
-  ├─ SkillsRuntime                未来 Skills 适配
-  └─ MockRuntime                  测试实现
+opencode-ai SDK / OpenCode Server / MCP / Skills / Tools
+  ↓
+LLM Providers
 ```
 
-业务层只知道：
+职责边界：
 
 ```text
-我要执行 generate_content 任务
-输入 project_id / chapter_id / task_type
-输出 stream delta / final content / tool events
-```
-
-业务层不直接知道：
-
-```text
-当前是 reqwest 请求 OpenAI-compatible
-还是 OpenCode server session.prompt
-还是 MCP tool call
-还是 Skills 执行
+小说业务层负责：业务流程、数据读取、上下文选择、结果保存、快照、状态回灌。
+SDK Runtime 负责：模型调用、流式事件、思维链事件、工具调用、MCP、Skills、Agent session。
 ```
 
 ---
 
-## 5.3 新增目录结构
+## 3. 新架构核心原则
 
-建议新增：
+### 3.1 所有 AI 操作都走 Runtime
+
+后续业务代码不得直接调用：
+
+```text
+AiClient::stream_chat
+reqwest /chat/completions
+第三方模型 API
+OpenCode Server HTTP API
+@opencode-ai/sdk
+```
+
+统一只能调用：
+
+```text
+AiRuntime
+```
+
+### 3.2 Runtime 默认目标是 SDK-backed
+
+`AiRuntime` 不是为了继续长期维护自研模型调用，而是为了把 SDK 放到底层。
+
+目标默认实现：
+
+```text
+SdkBackedRuntime / OpenCodeRuntime
+```
+
+兼容实现：
+
+```text
+OpenAICompatibleRuntime
+```
+
+测试实现：
+
+```text
+MockRuntime
+```
+
+### 3.3 业务逻辑继续由 OpenCodeWriter 控制
+
+SDK 不决定：
+
+```text
+是否覆盖正文
+是否创建快照
+是否保存数据库
+是否更新人物状态
+是否清空章节
+是否进入下一阶段
+是否批量执行
+```
+
+这些由 OpenCodeWriter 决定。
+
+SDK 只执行：
+
+```text
+模型生成
+工具调用
+MCP 调用
+Skills 调用
+Agent 会话
+思维链事件
+流式输出
+```
+
+### 3.4 Skills / MCP / Tools 都是 Runtime 能力
+
+业务执行过程中可以这样调用：
+
+```text
+生成正文任务
+  -> 使用 novel_content_writer skill
+  -> 调用 search_knowledge tool
+  -> 调用 get_world_items tool
+  -> 需要时调用 MCP 工具
+  -> 返回 content / thinking / tool events
+```
+
+---
+
+## 4. 推荐目录结构
+
+新增：
 
 ```text
 src-tauri/src/ai/runtime/
   mod.rs
   types.rs
   manager.rs
+  sdk_backed.rs
   openai_compatible.rs
   mock.rs
-  opencode.rs
   tools.rs
   skills.rs
   mcp.rs
+  events.rs
 
 src-tauri/src/ai/tasks/
   mod.rs
   service.rs
   task_type.rs
+  request_builder.rs
+
+src-tauri/src/ai/skills/
+  mod.rs
+  registry.rs
+  chapter_review.rs
+  chapter_repair.rs
+  content_writer.rs
+  aftercare.rs
+  style_extract.rs
+
+src-tauri/src/ai/tools/
+  mod.rs
+  registry.rs
+  project_tools.rs
+  knowledge_tools.rs
+  world_tools.rs
+  story_tools.rs
+```
+
+保留：
+
+```text
+src-tauri/src/ai/context.rs
+src-tauri/src/ai/events.rs
+```
+
+后续可逐步弱化：
+
+```text
+src-tauri/src/ai/client.rs
+```
+
+---
+
+## 5. Runtime 类型设计
+
+### 5.1 AiRequest
+
+```rust
+pub struct AiRequest {
+    pub task_type: String,
+    pub messages: Vec<ChatMessage>,
+    pub stream: bool,
+    pub output_schema: Option<serde_json::Value>,
+    pub tools: Vec<String>,
+    pub skills: Vec<String>,
+    pub mcp_servers: Vec<String>,
+    pub thinking: ThinkingPolicy,
+    pub permission_policy: PermissionPolicy,
+    pub metadata: serde_json::Value,
+}
+```
+
+### 5.2 ThinkingPolicy
+
+```rust
+pub enum ThinkingPolicy {
+    Disabled,
+    SummaryOnly,
+    FullInternal,
+}
 ```
 
 说明：
 
-- `runtime/`：底层 AI 执行环境。
-- `tasks/`：业务任务编排入口，隔离 `commands/ai.rs` 过度膨胀。
-- `context.rs`：继续保留，负责 prompt/context 构建。
-- `events.rs`：继续保留，负责 Tauri event。
+- `Disabled`：不请求 thinking。
+- `SummaryOnly`：只输出思考摘要或状态。
+- `FullInternal`：内部保留完整 thinking，但前端是否展示由 UI 决定。
 
----
-
-## 5.4 第一阶段：定义 Runtime 类型，不改变现有功能
-
-### 5.4.1 新增 `runtime/types.rs`
-
-建议定义：
+### 5.3 PermissionPolicy
 
 ```rust
-use futures::Stream;
-use serde::{Deserialize, Serialize};
-use std::pin::Pin;
+pub struct PermissionPolicy {
+    pub allow_business_tools: bool,
+    pub allow_mcp: bool,
+    pub allow_file_read: bool,
+    pub allow_file_write: bool,
+    pub allow_shell: bool,
+    pub require_user_approval: bool,
+}
+```
 
-use crate::ai::client::ChatMessage;
+默认值必须安全：
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+```text
+allow_business_tools = true
+allow_mcp = false
+allow_file_read = false
+allow_file_write = false
+allow_shell = false
+require_user_approval = true
+```
+
+### 5.4 AiDelta
+
+```rust
 pub enum AiDeltaType {
     Thinking,
+    ThinkingSummary,
     Content,
     ToolCall,
     ToolResult,
+    SkillStart,
+    SkillResult,
+    McpCall,
+    McpResult,
     Error,
     Done,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AiToolDefinition {
-    pub name: String,
-    pub description: String,
-    pub parameters_schema: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AiToolCall {
-    pub id: String,
-    pub name: String,
-    pub arguments: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AiToolResult {
-    pub call_id: String,
-    pub content: String,
-    pub is_error: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct AiRequest {
-    pub task_type: String,
-    pub provider_preset_id: Option<i64>,
-    pub model_name: Option<String>,
-    pub messages: Vec<ChatMessage>,
-    pub tools: Vec<AiToolDefinition>,
-    pub stream: bool,
-    pub output_schema: Option<serde_json::Value>,
-    pub metadata: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiDelta {
     pub delta_type: AiDeltaType,
     pub text: String,
-    pub tool_call: Option<AiToolCall>,
-    pub tool_result: Option<AiToolResult>,
+    pub payload: serde_json::Value,
 }
-
-pub type AiStream = Pin<Box<dyn Stream<Item = Result<AiDelta, String>> + Send>>;
 ```
 
-### 5.4.2 新增 `runtime/mod.rs`
+### 5.5 AiRuntime trait
+
+不强制马上加 `async_trait`，可以先用 boxed future：
 
 ```rust
-pub mod types;
-pub mod manager;
-pub mod openai_compatible;
-pub mod mock;
-pub mod opencode;
-pub mod tools;
-pub mod skills;
-pub mod mcp;
-
-use std::future::Future;
-use std::pin::Pin;
-use types::{AiRequest, AiStream};
-
 pub trait AiRuntime: Send + Sync {
-    fn stream(&self, request: AiRequest) -> Pin<Box<dyn Future<Output = Result<AiStream, String>> + Send + '_>>;
+    fn run(&self, request: AiRequest) -> Pin<Box<dyn Future<Output = Result<AiStream, String>> + Send + '_>>;
+    fn abort(&self, task_id: &str) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>>;
+    fn list_tools(&self) -> Pin<Box<dyn Future<Output = Result<Vec<AiToolInfo>, String>> + Send + '_>>;
+    fn list_skills(&self) -> Pin<Box<dyn Future<Output = Result<Vec<AiSkillInfo>, String>> + Send + '_>>;
 }
 ```
 
-不建议第一步引入 `async_trait`，因为当前 Cargo.toml 还没有 `async-trait`。可以先用 boxed future，减少新增依赖。
-
 ---
 
-## 5.5 第二阶段：把当前 AiClient 包成 OpenAICompatibleRuntime
+## 6. SdkBackedRuntime 设计
 
-### 5.5.1 新增 `runtime/openai_compatible.rs`
+### 6.1 定位
 
-目标：复用当前 `AiClient::stream_chat()` 的逻辑。
-
-```rust
-use std::future::Future;
-use std::pin::Pin;
-use futures::StreamExt;
-
-use crate::ai::client::{AiClient, StreamChunk};
-use crate::models::ModelPreset;
-
-use super::types::{AiDelta, AiDeltaType, AiRequest, AiStream};
-use super::AiRuntime;
-
-pub struct OpenAICompatibleRuntime {
-    preset: ModelPreset,
-}
-
-impl OpenAICompatibleRuntime {
-    pub fn new(preset: ModelPreset) -> Self {
-        Self { preset }
-    }
-}
-
-impl AiRuntime for OpenAICompatibleRuntime {
-    fn stream(&self, request: AiRequest) -> Pin<Box<dyn Future<Output = Result<AiStream, String>> + Send + '_>> {
-        Box::pin(async move {
-            let client = AiClient::new(
-                self.preset.api_base.clone(),
-                self.preset.api_key.clone(),
-                self.preset.model_name.clone(),
-            );
-
-            let stream = client.stream_chat(request.messages).map(|item| {
-                item.map(|chunk: StreamChunk| AiDelta {
-                    delta_type: match chunk.chunk_type.as_str() {
-                        "thinking" => AiDeltaType::Thinking,
-                        _ => AiDeltaType::Content,
-                    },
-                    text: chunk.text,
-                    tool_call: None,
-                    tool_result: None,
-                })
-            });
-
-            Ok(Box::pin(stream) as AiStream)
-        })
-    }
-}
-```
-
-### 5.5.2 保留 `AiClient`
-
-第一阶段不要删除 `AiClient`，它先作为 `OpenAICompatibleRuntime` 的内部实现。
-
-后续稳定后再考虑把 reqwest/SSE 解析代码从 `client.rs` 移到 runtime 内部。
-
----
-
-## 5.6 第三阶段：新增 RuntimeManager
-
-### 5.6.1 新增 `runtime/manager.rs`
+`SdkBackedRuntime` 是未来默认 runtime。
 
 职责：
 
-- 根据 task_type / preset_id 解析模型。
-- 根据 settings 决定 runtime 类型。
-- 默认返回 OpenAICompatibleRuntime。
-- 未来可返回 OpenCodeRuntime。
-
-建议接口：
-
-```rust
-pub enum RuntimeKind {
-    OpenAICompatible,
-    OpenCode,
-    Mock,
-}
-
-pub struct AiRuntimeManager;
-
-impl AiRuntimeManager {
-    pub fn resolve_runtime(
-        state: &tauri::State<'_, crate::db::DbState>,
-        preset_id: i64,
-        task_type: &str,
-    ) -> Result<Box<dyn AiRuntime>, String> {
-        let preset = crate::commands::ai_support::resolve_preset_for_runtime(state, preset_id, task_type)?;
-        Ok(Box::new(OpenAICompatibleRuntime::new(preset)))
-    }
-}
+```text
+1. 接收 AiRequest
+2. 调用 opencode-ai SDK / OpenCode Server
+3. 注册 tools / skills / MCP
+4. 转换 SDK event 为 AiDelta
+5. 把结果返回业务层
 ```
 
-注意：当前 `resolve_preset()` 在 `commands/ai.rs` 内部。为了给 runtime 复用，需要移动到公共 helper，例如：
+### 6.2 实现路线
+
+因为项目后端是 Rust，而 `@opencode-ai/sdk` 是 TypeScript/Node 生态，推荐两阶段实现。
+
+#### 阶段 A：Rust -> OpenCode Server HTTP
 
 ```text
-src-tauri/src/commands/ai_support.rs
+Rust SdkBackedRuntime
+  -> HTTP/SSE
+  -> OpenCode Server
+  -> SDK / Tools / MCP / Skills
 ```
 
-或者：
+优点：
 
 ```text
-src-tauri/src/ai/model_routing.rs
+Rust 后端仍是主控
+Tauri 打包复杂度相对低
+安全权限集中在 Rust 后端
+前端不接触 SDK
 ```
 
-推荐：
+#### 阶段 B：Rust -> Node SDK Adapter Sidecar
 
 ```text
-src-tauri/src/ai/model_routing.rs
+Rust SdkBackedRuntime
+  -> JSON-RPC / HTTP
+  -> Node SDK Adapter
+  -> @opencode-ai/sdk
 ```
 
-避免 commands 层被 runtime 反向依赖。
+当需要深度复用 SDK 能力时再做。
+
+### 6.3 默认策略
+
+第一版：
+
+```text
+OpenAICompatibleRuntime 仍作为默认 fallback
+SdkBackedRuntime 做实验开关
+```
+
+验证稳定后：
+
+```text
+SdkBackedRuntime 变为默认
+OpenAICompatibleRuntime 变为 fallback
+```
 
 ---
 
-## 5.7 第四阶段：改造 stream_and_emit
+## 7. OpenAICompatibleRuntime 的定位
 
-当前 `stream_and_emit()` 接收：
+当前 `AiClient` 不再作为业务层直接依赖，而是封装为：
 
-```rust
-client: &AiClient
-messages: Vec<ChatMessage>
+```text
+OpenAICompatibleRuntime
 ```
 
-目标改成：
+作用：
 
-```rust
-runtime: Box<dyn AiRuntime>
-request: AiRequest
+```text
+1. 保证现有功能不退化
+2. SDK 不可用时 fallback
+3. 离线或轻量模式下继续可用
+4. 方便测试 Runtime 抽象是否正确
 ```
 
-建议新增：
+迁移前：
 
-```rust
-async fn stream_runtime_and_emit(
-    runtime: Box<dyn AiRuntime>,
-    request: AiRequest,
-    app: &AppHandle,
-    session_id: &str,
-) -> Result<String, String> {
-    let mut stream = runtime.stream(request).await?;
-    let mut full_content = String::new();
-
-    while let Some(item) = stream.next().await {
-        match item {
-            Ok(delta) => {
-                match delta.delta_type {
-                    AiDeltaType::Thinking => {
-                        events::emit_chunk(app, session_id, &delta.text, "thinking");
-                    }
-                    AiDeltaType::Content => {
-                        full_content.push_str(&delta.text);
-                        events::emit_chunk(app, session_id, &delta.text, "content");
-                    }
-                    AiDeltaType::ToolCall => {
-                        // P1: emit tool-call event
-                    }
-                    AiDeltaType::ToolResult => {
-                        // P1: emit tool-result event
-                    }
-                    AiDeltaType::Error => {
-                        events::emit_error(app, session_id, &delta.text);
-                        return Err(delta.text);
-                    }
-                    AiDeltaType::Done => {}
-                }
-            }
-            Err(e) => {
-                events::emit_error(app, session_id, &e);
-                return Err(e);
-            }
-        }
-    }
-
-    events::emit_done(app, session_id);
-    Ok(full_content)
-}
+```text
+commands/ai.rs -> AiClient
 ```
 
-第一阶段可以保留旧 `stream_and_emit()`，等所有 AI 命令迁移完成后删除。
+迁移后：
+
+```text
+commands/ai.rs -> AiTaskService -> AiRuntimeManager -> OpenAICompatibleRuntime -> AiClient
+```
 
 ---
 
-## 5.8 第五阶段：逐个迁移 AI 命令
+## 8. Tools 设计
 
-迁移顺序必须从低风险到高风险。
+### 8.1 BusinessToolRegistry
 
-### 第一批：纯文本输出
+所有业务工具由 OpenCodeWriter 注册，SDK/Runtime 负责调用。
 
-```text
-generate_outline
-polish_content
-```
-
-### 第二批：JSON 结构输出
-
-```text
-generate_characters
-generate_chapters
-polish_chapter
-generate_character_from_description
-```
-
-### 第三批：新业务任务
-
-```text
-generate_idea_directions
-generate_outline_from_direction
-review_chapter_content
-repair_chapter_content
-chapter_aftercare
-extract_style_rules
-analyze_text
-batch_generate_chapters
-```
-
-每迁移一个命令都要确认：
-
-- 流式输出正常。
-- thinking/content 仍可区分。
-- onComplete 内容不变。
-- JSON 解析不受影响。
-- 失败时前端仍收到 ai-error。
-- 完成时前端仍收到 ai-done。
-
----
-
-## 5.9 第六阶段：定义 OpenCodeWriter 业务工具协议
-
-先不要接 OpenCode SDK，先定义内部工具。
-
-### 5.9.1 新增 `runtime/tools.rs`
-
-建议工具白名单：
+第一批工具：
 
 ```text
 get_project_profile
@@ -859,118 +461,53 @@ save_story_fact
 save_foreshadow
 ```
 
-### 5.9.2 工具调用边界
+### 8.2 工具权限
 
-禁止第一阶段开放：
+默认只开放业务工具。
+
+禁止默认开放：
 
 ```text
 shell
-file write
-system command
-arbitrary path read
-external network call
+任意文件读取
+任意文件写入
+外部命令执行
+任意网络请求
 ```
 
-原因：OpenCodeWriter 是小说写作工具，不是代码 Agent。AI 工具调用必须限定在小说业务数据内。
+### 8.3 工具调用流
 
-### 5.9.3 工具返回格式
-
-统一格式：
-
-```rust
-pub struct BusinessToolResult {
-    pub tool_name: String,
-    pub ok: bool,
-    pub content: serde_json::Value,
-    pub error: Option<String>,
-}
+```text
+SDK 触发 tool_call
+  -> Runtime 校验权限
+  -> BusinessToolRegistry 执行工具
+  -> 返回 tool_result
+  -> SDK 继续生成
+  -> OpenCodeWriter 接收最终结果
 ```
 
 ---
 
-## 5.10 第七阶段：OpenCodeRuntime 实验实现
+## 9. Skills 设计
 
-### 5.10.1 不直接嵌入 TS SDK
+### 9.1 SkillRegistry
 
-因为后端是 Rust，第一版建议：
+Skills 是可复用 AI 能力单元，不等于业务主流程。
 
-```text
-Rust -> HTTP -> OpenCode Server
-```
-
-而不是：
+第一批 Skills：
 
 ```text
-Rust -> Node sidecar -> @opencode-ai/sdk -> OpenCode Server
+novel_outline_planner       大纲规划
+novel_character_builder     人物生成
+novel_content_writer        正文生成
+chapter_review              章节审核
+chapter_repair              章节修复
+aftercare_extractor         状态回灌提取
+style_rule_extractor        写法规则提取
+knowledge_retriever         知识库召回
 ```
 
-### 5.10.2 新增设置
-
-在 `settings` 表中新增：
-
-```text
-ai_runtime_kind = openai-compatible | opencode-server
-opencode_server_url = http://127.0.0.1:4096
-opencode_enable_tools = false
-opencode_enable_mcp = false
-opencode_enable_skills = false
-```
-
-### 5.10.3 OpenCodeRuntime 第一版只支持低风险任务
-
-第一版只允许：
-
-```text
-review_chapter_content
-analyze_text
-extract_style_rules
-```
-
-暂不允许：
-
-```text
-generate_content
-generate_chapters
-generate_characters
-```
-
-原因：核心生成链路必须先保持稳定。
-
-### 5.10.4 OpenCodeRuntime 事件映射
-
-OpenCode server 的 session event 需要映射成 OpenCodeWriter 的：
-
-```text
-AiDeltaType::Thinking
-AiDeltaType::Content
-AiDeltaType::ToolCall
-AiDeltaType::ToolResult
-AiDeltaType::Error
-AiDeltaType::Done
-```
-
-如果 OpenCode 的返回事件不稳定，必须在 adapter 内处理，不能让业务命令直接感知 OpenCode 原始事件。
-
----
-
-## 5.11 第八阶段：Skills 可复用组件设计
-
-这里的 Skills 不建议直接等同于 OpenCode 的代码技能，而是定义 OpenCodeWriter 自己的小说业务 Skills。
-
-### 5.11.1 新增目录
-
-```text
-src-tauri/src/ai/skills/
-  mod.rs
-  registry.rs
-  outline_skill.rs
-  character_skill.rs
-  chapter_review_skill.rs
-  aftercare_skill.rs
-  style_skill.rs
-```
-
-### 5.11.2 Skill 定义
+### 9.2 Skill 输入输出
 
 ```rust
 pub struct SkillInput {
@@ -982,206 +519,315 @@ pub struct SkillInput {
 pub struct SkillOutput {
     pub content: serde_json::Value,
     pub summary: String,
-}
-
-pub trait AiSkill: Send + Sync {
-    fn name(&self) -> &'static str;
-    fn description(&self) -> &'static str;
-    fn run(&self, input: SkillInput) -> Pin<Box<dyn Future<Output = Result<SkillOutput, String>> + Send + '_>>;
+    pub artifacts: Vec<SkillArtifact>,
 }
 ```
 
-### 5.11.3 第一批 Skills
+### 9.3 Skill 使用方式
+
+业务层示例：
 
 ```text
-chapter_review_skill       章节审核
-chapter_repair_skill       章节修复
-aftercare_skill            章节后回灌
-style_extract_skill        提取写法规则
-knowledge_retrieve_skill   知识库召回
+review_chapter_content
+  -> 调用 chapter_review skill
+  -> skill 可调用 get_characters / get_world_items / search_knowledge 工具
+  -> 返回结构化 review JSON
+  -> 业务层保存 chapter_reviews
 ```
-
-这些 Skills 可以被：
-
-- 普通 OpenAICompatibleRuntime 调用。
-- 未来 OpenCodeRuntime 调用。
-- Creative Hub 调用。
-- 批量任务调用。
 
 ---
 
-## 5.12 第九阶段：前端配置入口
+## 10. MCP 设计
+
+### 10.1 McpRegistry
+
+MCP 不直接暴露给业务页面，而通过 Runtime 统一管理。
+
+配置项：
+
+```text
+mcp_servers
+mcp_enabled
+mcp_allowed_tools
+mcp_require_approval
+```
+
+### 10.2 第一阶段 MCP 策略
+
+第一阶段只允许：
+
+```text
+只读 MCP 工具
+需要用户确认的 MCP 工具
+明确列入白名单的 MCP 工具
+```
+
+不允许：
+
+```text
+自动执行 shell
+自动写文件
+自动删除数据
+自动调用不明外部服务
+```
+
+### 10.3 MCP 与业务工具关系
+
+```text
+业务工具：OpenCodeWriter 内置，优先使用
+MCP 工具：外部扩展，必须授权
+```
+
+---
+
+## 11. 思维链 / Thinking 设计
+
+SDK 可以负责 thinking/reasoning 事件接收与转发，但 OpenCodeWriter 需要统一策略。
+
+前端展示建议：
+
+```text
+默认显示：AI 正在思考 / 思考摘要
+高级模式：显示完整 thinking 内容
+导出内容：不包含 thinking
+保存正文：不保存 thinking
+生成日志：可保存 thinking summary
+```
+
+数据策略：
+
+```text
+content 进入正文/大纲/人物/章节
+thinking 进入生成日志或临时 UI，不进入正式作品内容
+```
+
+---
+
+## 12. AiTaskService 设计
+
+为了避免 `commands/ai.rs` 无限膨胀，新增：
+
+```text
+src-tauri/src/ai/tasks/service.rs
+```
+
+职责：
+
+```text
+1. 接收业务任务参数
+2. 读取项目上下文
+3. 调用 ContextBuilder / request_builder
+4. 组装 AiRequest
+5. 调用 AiRuntime
+6. 处理结果
+7. 保存数据库
+8. 发送 Tauri events
+```
+
+`commands/ai.rs` 只保留 Tauri command 薄封装。
+
+---
+
+## 13. 开发步骤
+
+### Sprint 1：Runtime 类型与旧实现包装
+
+1. 新增 `runtime/types.rs`。
+2. 新增 `AiRuntime` trait。
+3. 新增 `OpenAICompatibleRuntime`。
+4. 把当前 `AiClient` 包进去。
+5. 新增 `AiRuntimeManager`。
+6. 只迁移 `generate_outline`。
+7. 验证前端流式输出不变。
+
+### Sprint 2：迁移所有现有 AI 命令
+
+迁移：
+
+```text
+generate_outline
+generate_characters
+generate_chapters
+generate_content
+generate_character_from_description
+polish_content
+polish_chapter
+generate_idea_directions
+generate_outline_from_direction
+review_chapter_content
+repair_chapter_content
+chapter_aftercare
+extract_style_rules
+analyze_text
+batch_generate_chapters
+```
+
+完成标准：
+
+```text
+commands/ai.rs 不再直接 new AiClient
+所有 AI 调用统一走 AiRuntimeManager
+```
+
+### Sprint 3：BusinessToolRegistry
+
+1. 新增工具定义类型。
+2. 新增业务工具注册表。
+3. 实现项目/大纲/人物/章节/知识库/世界观读取工具。
+4. 实现保存审核结果、事实、伏笔的受控写入工具。
+5. 在生成日志中记录 tool_call / tool_result。
+
+### Sprint 4：SkillRegistry
+
+1. 定义 SkillInput / SkillOutput。
+2. 实现第一批小说 Skills。
+3. 将章节审核、章节修复、aftercare 改造成 Skill。
+4. Runtime 能够根据 AiRequest.skills 调用 Skills。
+
+### Sprint 5：SdkBackedRuntime / OpenCodeRuntime
+
+1. 新增 OpenCode Server 设置。
+2. 新增 OpenCode 事件适配器。
+3. 将 SDK/OpenCode 事件转换为 AiDelta。
+4. 首先接入低风险任务：`analyze_text`、`review_chapter_content`。
+5. 稳定后接入正文生成。
+
+### Sprint 6：MCP 接入
+
+1. 新增 MCP 配置表或 settings。
+2. MCP 工具列表读取。
+3. MCP 工具白名单。
+4. MCP 调用审批。
+5. MCP 调用日志。
+
+### Sprint 7：默认 Runtime 切换
+
+1. SdkBackedRuntime 稳定后设为默认。
+2. OpenAICompatibleRuntime 作为 fallback。
+3. 设置页提供 Runtime 状态和测试按钮。
+4. 出错时可一键切回 fallback。
+
+---
+
+## 14. 配置设计
+
+新增 settings：
+
+```text
+ai_runtime_default = sdk-backed | openai-compatible
+ai_runtime_fallback = openai-compatible
+opencode_server_url = http://127.0.0.1:4096
+sdk_tools_enabled = true
+sdk_skills_enabled = true
+sdk_mcp_enabled = false
+sdk_thinking_policy = summary-only
+sdk_require_tool_approval = true
+```
 
 设置页新增：
 
 ```text
-AI Runtime 设置
-```
-
-字段：
-
-```text
-Runtime 类型：OpenAI-compatible / OpenCode Server / Mock
-OpenCode Server 地址
-启用工具调用
-启用 MCP
-启用 Skills
-工具权限模式：安全 / 高级
-```
-
-默认：
-
-```text
-Runtime 类型：OpenAI-compatible
-工具调用：关闭
-MCP：关闭
-Skills：开启业务内置 Skills，但不开放系统工具
-```
-
-警告文案：
-
-```text
-OpenCode Server 属于实验能力。启用后，AI 可能通过工具读取或处理项目数据。建议仅启用 OpenCodeWriter 内置业务工具，不要开放 shell 或任意文件访问。
+AI 底层适配
+- 默认 Runtime
+- Fallback Runtime
+- OpenCode Server 地址
+- 测试连接
+- 工具调用开关
+- Skills 开关
+- MCP 开关
+- Thinking 策略
+- 权限审批模式
 ```
 
 ---
 
-## 5.13 第十阶段：验收标准
+## 15. 验收标准
 
-### 兼容性验收
+### 15.1 基础兼容验收
 
-- [ ] 不启用 OpenCodeRuntime 时，现有所有 AI 功能无变化。
-- [ ] 大纲生成正常。
-- [ ] 人物生成 JSON 解析正常。
-- [ ] 章节生成 JSON 解析正常。
-- [ ] 正文生成流式正常。
-- [ ] 润色流式正常。
-- [ ] 审核和修复命令正常。
-- [ ] 前端 AIContext 状态正常。
+- [ ] 所有现有 AI 功能正常。
+- [ ] 流式输出正常。
+- [ ] thinking/content 仍能区分。
+- [ ] JSON 解析不受影响。
 - [ ] ai-chunk / ai-done / ai-error 事件兼容。
+- [ ] 自动保存和快照不受影响。
 
-### Runtime 验收
+### 15.2 Runtime 架构验收
 
-- [ ] `AiRuntime` trait 存在。
-- [ ] `OpenAICompatibleRuntime` 是默认实现。
-- [ ] `commands/ai.rs` 不再直接创建 `AiClient`。
-- [ ] 模型路由在 RuntimeManager 中统一处理。
-- [ ] `MockRuntime` 可用于测试。
+- [ ] 所有 AI 命令统一走 AiRuntime。
+- [ ] commands/ai.rs 不再直接 new AiClient。
+- [ ] OpenAICompatibleRuntime 可作为 fallback。
+- [ ] SdkBackedRuntime 可作为默认候选。
+- [ ] RuntimeManager 统一处理 runtime 选择和模型路由。
 
-### Tool / Skill 验收
+### 15.3 SDK 能力验收
 
-- [ ] 工具白名单生效。
-- [ ] 禁止 shell 和任意文件写入。
-- [ ] Skills 可以被普通 AI 任务调用。
-- [ ] Skills 可以被未来 OpenCodeRuntime 复用。
+- [ ] SDK-backed runtime 能处理普通生成。
+- [ ] SDK-backed runtime 能处理 thinking 事件。
+- [ ] SDK-backed runtime 能处理 tool_call / tool_result。
+- [ ] SDK-backed runtime 能加载并执行 Skills。
+- [ ] SDK-backed runtime 能接入 MCP 工具。
+- [ ] SDK 错误能映射为统一 AiDelta::Error。
 
-### OpenCodeRuntime 验收
+### 15.4 安全验收
 
-- [ ] 可以配置 OpenCode Server URL。
-- [ ] 可以连接并执行低风险任务。
-- [ ] OpenCode 原始事件被转换成 AiDelta。
-- [ ] OpenCode 失败不会影响默认 Runtime。
-- [ ] 用户可以随时切回 OpenAI-compatible。
-
----
-
-## 5.14 推荐开发顺序
-
-### Sprint 1：Runtime 抽象，不改变行为
-
-1. 新增 `ai/runtime/types.rs`。
-2. 新增 `AiRuntime` trait。
-3. 新增 `OpenAICompatibleRuntime`。
-4. 新增 `AiRuntimeManager`。
-5. 把 `stream_and_emit()` 改造成 runtime 版本。
-6. 只迁移 `generate_outline`。
-7. 构建验证。
-
-### Sprint 2：迁移全部 AI 命令
-
-1. 迁移正文生成。
-2. 迁移人物生成。
-3. 迁移章节生成。
-4. 迁移润色。
-5. 迁移审核、修复、aftercare。
-6. 删除直接创建 `AiClient` 的业务代码。
-7. 构建验证。
-
-### Sprint 3：工具协议与 Skills
-
-1. 新增业务工具白名单。
-2. 新增 Skills registry。
-3. 把审核、修复、aftercare 封装为 Skills。
-4. 在任务日志中记录工具调用。
-5. 构建验证。
-
-### Sprint 4：OpenCodeRuntime 实验接入
-
-1. 新增 OpenCode Server 设置。
-2. 新增 `OpenCodeRuntime` 适配器。
-3. 只接入 `review_chapter_content`。
-4. 前端增加实验开关。
-5. 验证失败回退。
-
-### Sprint 5：MCP / 外部工具扩展
-
-1. MCP 状态检测。
-2. MCP 工具列表读取。
-3. MCP 工具白名单。
-4. Skills 与 MCP 工具统一展示。
-5. 加权限提示和审计日志。
+- [ ] 默认禁用 shell。
+- [ ] 默认禁用任意文件写入。
+- [ ] 默认禁用任意文件读取。
+- [ ] 外部 MCP 工具默认需要审批。
+- [ ] 业务写入工具只允许写入受控表。
+- [ ] 所有工具调用有日志。
 
 ---
 
-## 6. 当前不建议做的事情
+## 16. 不再使用的旧表述
 
-### 6.1 不建议直接删除 AiClient
-
-`AiClient` 当前是稳定路径，先作为 OpenAICompatibleRuntime 的内部实现保留。
-
-### 6.2 不建议前端直接调用 OpenCode Server
-
-原因：API Key、工具权限、项目数据边界都应该留在 Tauri 后端控制。
-
-### 6.3 不建议默认启用 OpenCodeRuntime
-
-它应该是实验能力，默认仍然是 OpenAI-compatible。
-
-### 6.4 不建议开放 shell / 任意文件访问
-
-小说写作项目不需要默认开放这类高危工具。
-
-### 6.5 不建议让 Agent 接管业务流程
-
-Agent 可以辅助工具调用，但不能决定：
-
-- 是否覆盖正文。
-- 是否保存数据库。
-- 是否更新角色状态。
-- 是否清空章节。
-- 是否批量生成。
-
-这些必须由 OpenCodeWriter 的业务代码控制。
-
----
-
-## 7. 最终建议
-
-当前开发计划大部分已经实现，下一阶段的真正重点不是继续加新业务表，而是把已经快速扩张的 AI 能力统一收口到 Runtime 架构。
-
-推荐下一步主线：
+旧表述：
 
 ```text
-先做 AiRuntime 抽象
-再迁移现有 AI 命令
-再定义业务工具和 Skills
-最后实验性接入 OpenCodeRuntime / MCP
+OpenCode SDK 只作为未来实验性 Agent / Tool / MCP Runtime。
 ```
 
-这样可以保证：
+修订为：
 
-1. 当前功能不退化。
-2. 后续模型调用不会分散在 commands 里。
-3. OpenCode SDK 可以作为可复用组件接入，而不是绑死项目。
-4. 业务逻辑仍由 OpenCodeWriter 控制。
-5. 未来做 Creative Hub、Agent、MCP、Skills 时有统一底座。
+```text
+OpenCodeWriter 应以 AiRuntime 为内部接口，
+以 opencode-ai SDK / OpenCode Server 作为底层 AI 能力适配方向，
+让 SDK 承担所有 AI 操作，
+业务层只调用 Runtime 能力完成小说业务。
+```
+
+旧表述：
+
+```text
+纯大纲生成、人物生成、正文生成不适合直接替代。
+```
+
+修订为：
+
+```text
+这些任务不适合交给 Agent 自主决定流程，
+但适合通过 SDK-backed runtime 执行底层模型调用、thinking、tools、skills。
+```
+
+---
+
+## 17. 最终建议
+
+下一阶段应该按这个方向推进：
+
+```text
+先统一 AiRuntime
+再把现有 AiClient 包装成 fallback
+再建设 SDK-backed runtime
+再接入 tools / skills / MCP
+最后把默认 AI 执行切到 SDK-backed runtime
+```
+
+这能实现用户目标：
+
+```text
+底层 AI 操作由 SDK 完成；
+OpenCodeWriter 上层专注小说业务；
+业务执行过程中可随时调用 Skills、MCP、Thinking、工具调用等 SDK 能力。
+```
