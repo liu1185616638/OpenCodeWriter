@@ -1,99 +1,100 @@
-# 2026-07-06 opencode-ai SDK 是否适合接入 OpenCodeWriter 的分析
+# 2026-07-06 opencode-ai SDK 作为 OpenCodeWriter 底层 AI 适配层的修订分析
 
-## 用户问题
+## 0. 用户最新修正
 
-你知道 opencode-ai sdk 吗？这个 SDK 适合使用到我的项目中吗？我想代替自定义实现的 AI 模型调用机制，以后所有与 AI 模型的交互，包括与 AI 有关的调用和工具使用都走 SDK，业务方面走代码逻辑实现，这样可以吗？
-
-## 结论先行
-
-**可以参考，但不建议现在直接用 `@opencode-ai/sdk` 全量替代当前项目的 AI 调用层。**
-
-更推荐的做法是：
+用户补充说明：
 
 ```text
-业务编排层仍然由 OpenCodeWriter 自己实现
-AI 调用层抽象成统一 AiRuntime 接口
-先保留当前 OpenAI-compatible 实现
-预留 OpenCodeRuntime 适配器
-后续如果需要 Agent / Tool / MCP，再接入 opencode-ai SDK
+我想要的不是接管小说业务主流程，而是做一个最底层的适配，
+让 SDK 来帮我将对 AI 的操作都完成，
+我只需要在上面搭建业务逻辑，
+以及在业务执行过程中调用 SDK 来实现各种功能，
+例如加载 skills、MCP、思维链、工具调用等等。
 ```
 
-也就是说，不建议把小说生成、大纲、人物、章节、正文这些业务流程交给 OpenCode Agent 自己决策；但可以把 OpenCode SDK 作为未来的“工具调用 / Agent 执行 / MCP 能力适配层”。
+因此，本文修订此前判断：重点不再是“是否让 OpenCode Agent 接管小说业务”，而是设计一种 **SDK-first 底层 AI 能力适配架构**。
 
-## 1. opencode-ai SDK 是什么
+---
 
-OpenCode 官方仓库定位是：
+## 1. 修订后的结论
+
+**这个方向可以做，而且比继续在业务代码里手写模型调用更适合后续扩展。**
+
+但架构边界必须明确：
 
 ```text
-The open source AI coding agent.
+OpenCodeWriter 业务层：负责小说业务流程
+SDK / Runtime 底层：负责所有 AI 能力执行
 ```
 
-它首先是一个开源 AI 编码 Agent，而不是专门为小说生成场景设计的通用 AI SDK。
+也就是说：
 
-从仓库 README 看，它支持：
-
-- CLI 安装。
-- Desktop App。
-- build / plan 内置 agent。
-- general 子 agent。
-- 配置文档和 agent 文档。
-
-从 `@opencode-ai/sdk` 包看，它的定位是连接/启动 OpenCode Server，并通过 Client 调用 server 的会话、工具、文件、命令、MCP 等能力。
-
-## 2. SDK 的实际能力结构
-
-`@opencode-ai/sdk` 的 package 暴露：
-
-```json
-"exports": {
-  ".": "./src/index.ts",
-  "./client": "./src/client.ts",
-  "./server": "./src/server.ts",
-  "./v2": "./src/v2/index.ts",
-  "./v2/client": "./src/v2/client.ts",
-  "./v2/server": "./src/v2/server.ts",
-  "./v2/types": "./src/v2/gen/types.gen.ts"
-}
+```text
+业务层决定：什么时候生成大纲、什么时候生成人物、什么时候审核章节、什么时候回灌状态。
+SDK 负责：模型调用、流式输出、思维链事件、工具调用、MCP、Skills、Agent 执行、会话管理。
 ```
 
-它的 `createOpencode()` 实际做的是：
+推荐目标架构：
 
-```ts
-createOpencodeServer(...)
-createOpencodeClient({ baseUrl: server.url })
+```text
+OpenCodeWriter Novel Business Logic
+  ↓
+OpenCodeWriter AiRuntime 抽象接口
+  ↓
+SdkBackedRuntime / OpenCodeRuntime
+  ↓
+opencode-ai SDK / OpenCode Server / MCP / Skills / Tools
+  ↓
+LLM Providers
 ```
 
-而 `createOpencodeServer()` 会通过 `cross-spawn` 启动本机 `opencode serve`：
+这样既满足“所有 AI 操作都走 SDK”，又避免“SDK 接管小说主流程”。
 
-```ts
-const args = [`serve`, `--hostname=${options.hostname}`, `--port=${options.port}`]
-const proc = launch(`opencode`, args, ...)
+---
+
+## 2. opencode-ai SDK 在该架构中的定位
+
+opencode-ai SDK 不应该被理解成一个普通的 `chat.completions` 替代品，而应该被放在更底层，作为 **AI 能力执行底座**。
+
+它可以负责：
+
+```text
+1. 模型请求
+2. 流式响应
+3. session 管理
+4. 思维链 / reasoning 事件接收与转发
+5. tools 注册、发现、调用
+6. MCP server 接入与工具桥接
+7. skills 加载与调度
+8. provider / model 管理
+9. agent 执行能力
+10. abort / retry / event subscribe
 ```
 
-这说明它不是一个“直接发 LLM 请求”的轻量库，而是一个“启动/连接 OpenCode 服务”的 SDK。
+OpenCodeWriter 负责：
 
-SDK 生成的 client 包含这些能力：
+```text
+1. 小说项目结构
+2. 大纲、人物、章节、正文的数据模型
+3. 章节任务单
+4. 审核结果保存
+5. 伏笔、事实、角色状态回灌
+6. 快照、版本、自动保存
+7. UI 交互
+8. 业务流程编排
+```
 
-- `session.create`
-- `session.prompt`
-- `session.promptAsync`
-- `session.abort`
-- `session.messages`
-- `tool.ids`
-- `tool.list`
-- `provider.list`
-- `file.read`
-- `find.text`
-- `mcp.*`
-- `event` SSE
+一句话：
 
-这类能力非常适合编码 Agent、项目文件分析、工具调用、MCP 调度，但不等价于小说业务里的“生成大纲、人物、章节、正文”。
+```text
+SDK 执行 AI 能力，OpenCodeWriter 编排小说业务。
+```
 
-## 3. 当前 OpenCodeWriter 的 AI 调用现状
+---
 
-当前项目是 Tauri + Rust 后端，本地 SQLite。
+## 3. 当前代码现状
 
-AI 调用主要集中在：
+当前 OpenCodeWriter 的 AI 调用集中在：
 
 ```text
 src-tauri/src/ai/client.rs
@@ -101,331 +102,441 @@ src-tauri/src/ai/context.rs
 src-tauri/src/commands/ai.rs
 ```
 
-当前实现特点：
-
-- 使用 Rust `reqwest` 直接请求 OpenAI-compatible `/chat/completions`。
-- 支持 SSE 流式输出。
-- 解析 `reasoning_content`、`content`、GLM `reces` 等不同流格式。
-- 将流式内容通过 Tauri event 发给前端。
-- 大纲、人物、章节、正文、润色等业务 prompt 由 `ContextBuilder` 构建。
-- 业务命令包括：
-  - `generate_outline`
-  - `generate_characters`
-  - `generate_chapters`
-  - `generate_content`
-  - `generate_character_from_description`
-  - `polish_content`
-  - `polish_chapter`
-
-这个结构本质上已经是：
+当前实际调用路径仍然是：
 
 ```text
-业务逻辑层：commands/ai.rs
-Prompt 组装层：ai/context.rs
-模型调用层：ai/client.rs
-事件流层：ai/events.rs
+commands/ai.rs
+  -> AiClient
+  -> OpenAI-compatible /chat/completions
 ```
 
-这套分层是对的，问题不是“必须换 SDK”，而是当前 `AiClient` 还比较薄，没有抽象成可替换 Runtime。
-
-## 4. 直接替换成 opencode-ai SDK 的问题
-
-### 4.1 技术栈不完全匹配
-
-OpenCodeWriter 后端是 Rust，`@opencode-ai/sdk` 是 TypeScript/Node 生态 SDK。
-
-如果强行接入，有三种方式：
-
-1. Tauri Rust 调 Node sidecar。
-2. 前端直接调用 OpenCode server。
-3. Rust 直接调用 OpenCode server HTTP API。
-
-其中：
-
-- 方案 1 会增加 Node sidecar 打包、启动、端口管理、进程生命周期问题。
-- 方案 2 会让 API Key、工具权限暴露面变大，不适合桌面本地数据安全。
-- 方案 3 可行，但这时你其实不是用 TS SDK，而是在用 OpenCode server HTTP API。
-
-### 4.2 SDK 默认目标是编码 Agent，不是小说生成
-
-OpenCode 的核心抽象是 session、project、file、tool、shell、MCP、provider、agent。
-
-小说创作的核心抽象是：
-
-- 项目设定。
-- 大纲。
-- 人物。
-- 世界观。
-- 章节任务单。
-- 正文。
-- 审核报告。
-- 伏笔。
-- 角色状态。
-
-这两组抽象不一致。
-
-如果把所有 AI 相关调用都走 OpenCode agent，让 Agent 自己决定工具使用，很容易出现：
-
-- 输出不可控。
-- JSON 结构不稳定。
-- 业务状态难回灌。
-- 生成结果难审计。
-- 用户很难知道某一步为什么失败。
-
-### 4.3 OpenCode server 生命周期会增加桌面应用复杂度
-
-`createOpencodeServer()` 会启动 `opencode serve` 并等待端口可用。对桌面软件来说，你需要额外处理：
-
-- opencode binary 是否内置。
-- 首次启动 server 的耗时。
-- 端口冲突。
-- server 崩溃恢复。
-- 用户机器上的环境变量和模型凭据。
-- Windows 打包兼容性。
-- 离线使用场景。
-- 日志和错误诊断。
-
-而当前 Rust `reqwest` 直接调用模型，路径更短、更可控。
-
-### 4.4 工具调用权限风险
-
-OpenCode 的工具链包含文件、命令、shell、MCP 等能力。对于小说软件而言，大多数 AI 任务不需要 shell 和代码文件操作。
-
-如果接入时权限边界不清晰，可能会出现：
-
-- AI 误操作本地文件。
-- 工具调用越权。
-- 用户难以理解为什么 AI 要调用某个工具。
-- 小说生成任务被编码 Agent 语义污染。
-
-因此即使未来接入，也必须做白名单工具，不应开放 OpenCode 的默认 build agent 权限。
-
-## 5. 可以这样设计吗？
-
-用户设想是：
+当前 `AiClient` 自己做了：
 
 ```text
-以后所有与 AI 模型的交互，包括与 AI 有关的调用和工具使用都走 SDK，业务方面走代码逻辑实现。
+1. reqwest 请求
+2. SSE 解析
+3. reasoning_content / content / GLM reces 解析
+4. StreamChunk 输出
 ```
 
-这个方向在架构思想上是对的：
+这说明现在底层 AI 能力仍由项目自己手写实现。
+
+如果后续要支持 MCP、Skills、工具调用、多 Agent、思维链统一事件，那么继续手写会越来越重。
+
+因此，下一步应该把底层能力抽象出来，并引入 SDK-backed runtime。
+
+---
+
+## 4. 新边界：不是 Agent 接管业务，而是 SDK 执行 AI 操作
+
+错误理解：
 
 ```text
-业务逻辑和 AI Runtime 解耦
+用户点击“生成正文”
+-> 交给 OpenCode Agent 自己决定要做什么
+-> Agent 自己读写项目数据
+-> Agent 自己决定保存结果
 ```
 
-但不建议把 “SDK” 直接限定成 `@opencode-ai/sdk`。更合理的表达应该是：
+正确理解：
 
 ```text
-所有 AI 调用统一走 OpenCodeWriter 自己定义的 AiRuntime 接口；
-AiRuntime 可以有多个实现：
-1. OpenAICompatibleRuntime
-2. OpenCodeRuntime
-3. VercelAiSdkRuntime
-4. MockRuntime
+用户点击“生成正文”
+-> OpenCodeWriter 业务层读取项目、大纲、人物、世界观、章节任务单
+-> OpenCodeWriter 构建 AiRequest
+-> AiRuntime 调用 SDK 执行模型 / 工具 / MCP / Skills
+-> SDK 返回统一事件流
+-> OpenCodeWriter 解析最终结果并保存正文
 ```
 
-这样以后换 SDK、换模型、换 Agent 框架，不会影响大纲、人物、章节、正文这些业务逻辑。
+也就是说，SDK 负责“怎么和 AI 交互”，业务层负责“这次交互的业务意义是什么”。
 
-## 6. 推荐架构
+---
 
-建议新增一层：
+## 5. 推荐架构：AiRuntime 是项目接口，SDK 是默认底层实现
+
+### 5.1 分层结构
 
 ```text
-src-tauri/src/ai/runtime/
-  mod.rs
-  types.rs
-  openai_compatible.rs
-  opencode_runtime.rs     // 先预留，不急着实现
-  mock.rs
+src-tauri/src/ai/
+  context.rs              业务 prompt / context 构建
+  events.rs               Tauri AI 事件输出
+  runtime/
+    mod.rs                AiRuntime trait
+    types.rs              AiRequest / AiDelta / ToolCall / SkillCall
+    manager.rs            Runtime 选择与配置
+    sdk_backed.rs         SDK-backed 默认实现
+    openai_compatible.rs  兼容旧实现 / fallback
+    mock.rs               测试实现
+    tools.rs              本地业务工具注册
+    skills.rs             Skills 注册与加载
+    mcp.rs                MCP 工具桥接
 ```
 
-### 6.1 Runtime 接口
+### 5.2 Runtime 抽象职责
 
-建议定义：
+`AiRuntime` 不只是 chat，而是统一 AI 操作入口：
+
+```text
+stream_chat              流式文本 / thinking / content
+generate_object          结构化 JSON 输出
+run_with_tools           工具调用
+run_skill                执行 skill
+list_tools               工具发现
+list_mcp_tools           MCP 工具发现
+abort                    取消任务
+```
+
+### 5.3 业务层调用方式
+
+业务层不再直接关心 SDK 细节。
+
+示例：
 
 ```rust
-pub struct AiRequest {
-    pub task_type: String,
-    pub model_route: Option<String>,
-    pub messages: Vec<ChatMessage>,
-    pub tools: Vec<AiToolDefinition>,
-    pub stream: bool,
-    pub output_schema: Option<String>,
-}
+let request = AiRequest {
+    task_type: "generate_content".into(),
+    messages,
+    output_schema: None,
+    tools: vec!["search_knowledge", "get_world_items"],
+    skills: vec!["novel_content_writer"],
+    mcp_policy: McpPolicy::Disabled,
+    stream: true,
+    metadata,
+};
 
-pub struct AiDelta {
-    pub delta_type: String, // thinking | content | tool_call | tool_result | error | done
-    pub text: String,
-    pub tool_call: Option<AiToolCall>,
-}
-
-#[async_trait]
-pub trait AiRuntime {
-    async fn stream(&self, request: AiRequest) -> Result<Pin<Box<dyn Stream<Item = Result<AiDelta, String>> + Send>>, String>;
-}
+let stream = ai_runtime.stream(request).await?;
 ```
 
-### 6.2 当前实现迁移
-
-把现在的：
+业务层看到的是统一 `AiDelta`：
 
 ```text
-AiClient::stream_chat(messages)
+thinking
+content
+tool_call
+tool_result
+skill_start
+skill_result
+mcp_call
+mcp_result
+error
+done
 ```
 
-改造成：
+底层到底是 opencode-ai SDK、OpenCode Server、OpenAI-compatible fallback，业务层不关心。
+
+---
+
+## 6. 推荐实现方式
+
+因为 OpenCodeWriter 后端是 Rust，而 `@opencode-ai/sdk` 是 TypeScript/Node 生态，所以落地有两种路线。
+
+### 路线 A：Rust 调 OpenCode Server HTTP API
 
 ```text
-OpenAICompatibleRuntime::stream(AiRequest)
+Rust AiRuntime
+  -> HTTP
+  -> OpenCode Server
+  -> SDK / Agent / Tools / MCP / Skills
 ```
 
-业务命令不再直接依赖 `AiClient`，而是依赖统一 runtime。
-
-### 6.3 未来 OpenCodeRuntime
-
-当你真的需要工具调用或 MCP 时，再实现：
+优点：
 
 ```text
+1. Rust 后端保持主控
+2. 前端不暴露 SDK 和 API Key
+3. 不需要业务层写 Node 代码
+4. Tauri 后端统一管理安全边界
+```
+
+缺点：
+
+```text
+1. 需要管理 OpenCode Server 进程
+2. 需要适配 OpenCode Server 的事件格式
+3. SDK 能力通过 server 间接使用
+```
+
+### 路线 B：Tauri Sidecar 内置 Node SDK Adapter
+
+```text
+Rust AiRuntime
+  -> local sidecar process
+  -> Node SDK Adapter
+  -> @opencode-ai/sdk
+  -> OpenCode Server / SDK 能力
+```
+
+优点：
+
+```text
+1. 可以更直接使用 @opencode-ai/sdk
+2. SDK 升级和适配集中在 Node adapter
+3. 更容易复用 SDK 的客户端能力
+```
+
+缺点：
+
+```text
+1. 打包复杂度更高
+2. Windows sidecar 管理更复杂
+3. 需要额外设计 adapter 协议
+```
+
+### 推荐路线
+
+第一阶段推荐路线 A：
+
+```text
+Rust -> OpenCode Server HTTP API
+```
+
+等验证稳定后，再决定是否引入 Node SDK Adapter。
+
+核心原则是：
+
+```text
+不让前端直接调用 SDK；
+不让业务代码直接依赖 SDK；
+SDK 能力统一隐藏在 AiRuntime 后面。
+```
+
+---
+
+## 7. SDK 负责的能力清单
+
+后续所有 AI 相关底层操作都应该走 Runtime/SDK：
+
+### 7.1 模型调用
+
+```text
+普通文本生成
+结构化 JSON 生成
+流式输出
+批量任务调用
+模型 fallback
+provider/model 查询
+```
+
+### 7.2 思维链 / reasoning 事件
+
+```text
+thinking delta
+reasoning summary
+思考过程开关
+思考内容过滤
+思考内容单独事件输出
+```
+
+注意：前端可以显示“AI 思考中 / 思考摘要”，但不一定暴露完整内部 reasoning 文本。
+
+### 7.3 工具调用
+
+```text
+tool definitions
+tool call
+tool result
+tool permission
+tool audit log
+```
+
+工具调用只开放业务白名单。
+
+### 7.4 MCP
+
+```text
+MCP server 配置
+MCP tool list
+MCP tool call
+MCP auth 状态
+MCP result 映射
+```
+
+### 7.5 Skills
+
+```text
+加载 Skills
+注册 Skills
+执行 Skills
+Skill 输入输出 schema
+Skill 执行日志
+Skill 版本管理
+```
+
+### 7.6 Agent / Session
+
+```text
+session create
+session prompt
+session abort
+session messages
+session events
+agent selection
+```
+
+这些能力只作为执行机制，不接管业务主流程。
+
+---
+
+## 8. OpenCodeWriter 自己保留的业务能力
+
+即使所有 AI 操作都走 SDK，以下仍必须由 OpenCodeWriter 控制：
+
+```text
+1. 什么时候调用 AI
+2. 调哪个 task_type
+3. 注入哪些小说上下文
+4. 允许哪些 tools / skills / MCP
+5. 结果保存到哪里
+6. 是否创建快照
+7. 是否更新 stale markers
+8. 是否更新角色状态 / 事实 / 伏笔
+9. 是否覆盖正文
+10. 是否进入下一阶段
+```
+
+业务层不是写底层 AI 客户端，而是写：
+
+```text
+小说业务任务编排器
+```
+
+---
+
+## 9. 修改后的迁移路线
+
+### 阶段 1：抽象 AiRuntime，但设计成 SDK-first
+
+新增：
+
+```text
+AiRuntime
+AiRequest
+AiDelta
+AiToolDefinition
+AiToolCall
+AiSkillCall
+AiMcpCall
+```
+
+目标：让所有 AI 命令只调用 `AiRuntime`，不再直接依赖 `AiClient`。
+
+### 阶段 2：保留 OpenAI-compatible 作为 fallback runtime
+
+当前 `AiClient` 不删除，先包装成：
+
+```text
+OpenAICompatibleRuntime
+```
+
+它只作为兼容旧能力和 SDK 不可用时的 fallback。
+
+### 阶段 3：实现 SdkBackedRuntime / OpenCodeRuntime
+
+新增：
+
+```text
+SdkBackedRuntime
 OpenCodeRuntime
 ```
 
-它可以有两种实现方式：
-
-1. Rust 直接请求 OpenCode server HTTP API。
-2. Tauri sidecar 启动 Node/OpenCode server，再通过 HTTP 调用。
-
-更推荐先做第一种：Rust 通过 HTTP 调 OpenCode server，而不是在 Rust 里嵌 Node SDK。
-
-## 7. 什么场景适合用 opencode-ai SDK
-
-适合：
-
-- 你要做 Creative Hub 类似的自然语言任务中枢。
-- 你要让 AI 调用工具。
-- 你要接 MCP。
-- 你要做多步骤 Agent。
-- 你要利用 OpenCode 的 provider/model/agent/session 能力。
-- 你要允许 AI 根据上下文选择工具。
-
-不适合直接替代：
-
-- 纯大纲生成。
-- 纯人物 JSON 生成。
-- 章节目录 JSON 生成。
-- 正文生成。
-- 正文润色。
-- 结构化审核输出。
-
-这些更适合继续用业务代码强约束 prompt、schema、保存逻辑和状态回灌。
-
-## 8. 如果坚持接入，应采用渐进方案
-
-### 阶段 1：先抽象 AiRuntime，不接 OpenCode
-
-目标：不改变功能，只重构 AI 调用层。
-
-任务：
-
-- 新增 `AiRuntime` trait。
-- 把当前 `AiClient` 改成 `OpenAICompatibleRuntime`。
-- `commands/ai.rs` 仍保持原业务逻辑。
-- 前端无感。
-
-验收：现有大纲、人物、章节、正文、润色全部可用。
-
-### 阶段 2：增加工具调用协议，但只做本地业务工具
-
-新增工具类型：
+职责：
 
 ```text
-get_project_profile
-get_outline
-get_characters
-get_chapters
-get_world_items
-save_review_result
-create_snapshot
+把 AiRequest 转成 SDK / OpenCode Server 请求
+把 SDK 事件转成 AiDelta
+把 tools / skills / MCP 调用统一映射回 OpenCodeWriter
 ```
 
-注意：这些工具是 OpenCodeWriter 的业务工具，不是开放 shell/file 系统工具。
+### 阶段 4：所有 AI 命令迁移到 Runtime
 
-### 阶段 3：做一个 OpenCodeRuntime 实验开关
-
-设置页新增：
+迁移：
 
 ```text
-AI Runtime:
-- OpenAI Compatible（默认）
-- OpenCode Server（实验）
+generate_outline
+generate_characters
+generate_chapters
+generate_content
+generate_idea_directions
+generate_outline_from_direction
+polish_content
+polish_chapter
+review_chapter_content
+repair_chapter_content
+chapter_aftercare
+extract_style_rules
+analyze_text
+batch_generate_chapters
 ```
 
-OpenCodeRuntime 只先接一个非核心任务，例如：
+迁移后，`commands/ai.rs` 不再直接创建 `AiClient`。
+
+### 阶段 5：Skills / MCP / Tools 统一注册
+
+新增：
 
 ```text
-AI 审核本章
+BusinessToolRegistry
+SkillRegistry
+McpRegistry
+PermissionPolicy
 ```
 
-不要一上来接正文生成。
+所有工具、Skills、MCP 调用都通过 SDK/Runtime 执行，但权限由 OpenCodeWriter 控制。
 
-### 阶段 4：评估稳定性后再扩大范围
+### 阶段 6：默认 Runtime 切换
 
-可逐步尝试：
-
-- 章节审核。
-- 章节修复。
-- Creative Hub 问答。
-- 资料检索 + 工具调用。
-
-最后才考虑：
-
-- 大纲生成。
-- 人物生成。
-- 正文生成。
-
-## 9. 我的最终建议
-
-### 9.1 不建议现在全量替换
-
-原因：
-
-- 当前项目是 Rust/Tauri，本身已经有稳定直接的 OpenAI-compatible 流式调用。
-- `@opencode-ai/sdk` 是 TS SDK，需要 server/sidecar，接入复杂度高。
-- OpenCode 主要是编码 Agent，和小说生成业务抽象不完全一致。
-- 小说业务需要强 schema、强流程、强状态回灌，不能完全交给 Agent 自由执行。
-
-### 9.2 建议先做 Runtime 抽象
-
-最佳路线：
+当 SdkBackedRuntime 稳定后：
 
 ```text
-现在：commands/ai.rs -> AiClient -> OpenAI-compatible API
-
-改成：commands/ai.rs -> AiRuntime trait -> OpenAICompatibleRuntime
-
-未来：commands/ai.rs -> AiRuntime trait -> OpenCodeRuntime / VercelAiSdkRuntime / MockRuntime
+默认 Runtime：SdkBackedRuntime
+Fallback Runtime：OpenAICompatibleRuntime
+Mock Runtime：测试
 ```
 
-### 9.3 OpenCode SDK 的最佳定位
+---
 
-在 OpenCodeWriter 中，OpenCode SDK 最适合定位为：
+## 10. 安全边界
+
+即使 SDK 负责所有 AI 操作，也不能默认开放全部能力。
+
+默认安全策略：
 
 ```text
-实验性的 Agent / Tool / MCP Runtime
+允许：OpenCodeWriter 内置业务工具
+允许：只读知识库检索
+允许：只读项目上下文读取
+允许：受控写入审核结果 / 事实 / 伏笔 / 快照
+禁用：shell
+禁用：任意文件写入
+禁用：任意路径读取
+禁用：外部命令执行
+禁用：未经用户确认的 destructive 操作
 ```
 
-而不是：
+这不是限制 SDK，而是给 SDK 加业务安全边界。
+
+---
+
+## 11. 最终修订建议
+
+原先表述偏保守，容易理解成“OpenCode SDK 只是未来可选实验能力”。
+
+修订后应该明确为：
 
 ```text
-所有模型调用的唯一底层 SDK
+OpenCodeWriter 应该建立自己的 AiRuntime 接口；
+AiRuntime 的目标是承接所有 AI 操作；
+底层优先适配 opencode-ai SDK / OpenCode Server；
+当前 OpenAI-compatible 实现作为 fallback；
+小说业务逻辑继续由 OpenCodeWriter 编排；
+SDK 只负责 AI 能力执行，不负责小说业务决策。
 ```
 
-## 10. 一句话结论
+这才符合用户想要的方向：
 
-你的想法“AI 调用统一走 SDK，业务走代码逻辑”是正确的，但这个 SDK 应该先是你自己定义的 `AiRuntime` 抽象，而不是直接绑定 `@opencode-ai/sdk`。
-
-短期建议：继续保留当前自定义模型调用，先重构成 Runtime 接口。
-
-中期建议：在章节审核、修复、Creative Hub 这类需要工具调用的功能上试接 OpenCodeRuntime。
-
-长期建议：如果 OpenCode SDK 在本地桌面打包、工具权限、模型路由、稳定性上验证通过，再逐步扩大使用范围。
+```text
+底层统一 AI SDK 能力
+上层专注小说业务逻辑
+业务执行过程中随时调用 SDK 提供的 skills / MCP / tools / thinking / agent 能力
+```
