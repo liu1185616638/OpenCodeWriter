@@ -3,11 +3,26 @@ use rusqlite::{params, OptionalExtension};
 use tauri::{AppHandle, Manager, State};
 
 use crate::ai::client::{AiClient, ChatMessage};
-use crate::ai::context::ContextBuilder;
+use crate::ai::context::{ContextBuilder, ChapterTaskSheet};
 use crate::ai::events;
 use crate::db::{get_conn, DbState};
-use crate::models::{Character, ModelPreset, StyleConfig};
+use crate::models::{Character, Chapter, ModelPreset, StyleConfig};
 use serde::Deserialize;
+
+/// Phase 5.4: Resolve preset by task type when preset_id is 0.
+/// If preset_id > 0, use it directly (manual selection).
+/// If preset_id == 0, look up model_routes for the task type.
+fn resolve_preset(state: &State<'_, DbState>, preset_id: i64, task_type: &str) -> Result<ModelPreset, String> {
+    if preset_id > 0 {
+        return get_preset(state, preset_id);
+    }
+    // Look up route
+    let route_preset_id = crate::commands::model_routes::get_route_preset(state, task_type)?;
+    match route_preset_id {
+        Some(id) => get_preset(state, id),
+        None => Err(format!("未配置模型且任务类型 '{}' 无路由预设，请手动选择模型或配置模型路由", task_type)),
+    }
+}
 
 fn get_preset(state: &State<'_, DbState>, preset_id: i64) -> Result<ModelPreset, String> {
     let conn = get_conn(state)?;
@@ -87,17 +102,23 @@ fn get_project_name(state: &State<'_, DbState>, project_id: i64) -> Result<Strin
     .map_err(|e| format!("获取项目名称失败: {}", e))
 }
 
-fn get_chapter_info(
+fn get_chapter_full(
     state: &State<'_, DbState>,
     chapter_id: i64,
-) -> Result<(String, String, i64), String> {
-    let conn = get_conn(state)?;
-    conn.query_row(
-        "SELECT title, summary, project_id FROM chapters WHERE id = ?1",
-        params![chapter_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    )
-    .map_err(|e| format!("获取章节信息失败: {}", e))
+) -> Result<Chapter, String> {
+    crate::commands::chapters::get_chapter_full(state, chapter_id)
+}
+
+/// Build a ChapterTaskSheet from a Chapter model
+fn chapter_to_task_sheet(ch: &Chapter) -> ChapterTaskSheet {
+    ChapterTaskSheet {
+        goal: ch.goal.clone(),
+        conflict_level: ch.conflict_level,
+        hook: ch.hook.clone(),
+        payoff: ch.payoff.clone(),
+        must_avoid: ch.must_avoid.clone(),
+        target_word_count: ch.target_word_count,
+    }
 }
 
 fn get_previous_content(
@@ -277,12 +298,57 @@ fn update_polished_chapters(
     Ok(updated)
 }
 
+/// Context for writing a generation_logs entry
+struct GenerationLogContext {
+    project_id: Option<i64>,
+    target_type: String,
+    target_id: Option<i64>,
+    command: String,
+    model_name: String,
+    input_chars: usize,
+}
+
+/// Insert a "started" generation log entry, returns the log id (0 on failure or when project_id is None)
+fn insert_generation_log(app: &AppHandle, ctx: &GenerationLogContext) -> i64 {
+    let project_id = match ctx.project_id {
+        Some(id) => id,
+        None => return 0, // Skip logging for non-project operations (e.g. idea generation)
+    };
+    let state = app.state::<DbState>();
+    let conn = match get_conn(&state) {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
+    let res = conn.execute(
+        "INSERT INTO generation_logs (project_id, target_type, target_id, command, model_name, status, error, input_chars, output_chars, started_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, 'started', '', ?6, 0, datetime('now'))",
+        params![project_id, ctx.target_type, ctx.target_id, ctx.command, ctx.model_name, ctx.input_chars as i64],
+    );
+    if res.is_ok() { conn.last_insert_rowid() } else { 0 }
+}
+
+/// Update a generation log entry with final status (best-effort, errors ignored)
+fn finish_generation_log(app: &AppHandle, log_id: i64, status: &str, error: &str, output_chars: usize) {
+    if log_id <= 0 { return; }
+    let state = app.state::<DbState>();
+    let conn = match get_conn(&state) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let _ = conn.execute(
+        "UPDATE generation_logs SET status = ?1, error = ?2, output_chars = ?3, ended_at = datetime('now') WHERE id = ?4",
+        params![status, error, output_chars as i64, log_id],
+    );
+}
+
 async fn stream_and_emit(
     client: &AiClient,
     messages: Vec<ChatMessage>,
     app: &AppHandle,
     session_id: &str,
+    log_ctx: &GenerationLogContext,
 ) -> Result<String, String> {
+    let log_id = insert_generation_log(app, log_ctx);
     let mut stream = client.stream_chat(messages);
     let mut full_content = String::new();
     let mut chunk_count: u32 = 0;
@@ -313,6 +379,7 @@ async fn stream_and_emit(
             }
             Err(e) => {
                 eprintln!("[stream] error after {} chunks: {}", chunk_count, e);
+                finish_generation_log(app, log_id, "failed", &e, full_content.len());
                 events::emit_error(app, session_id, &e);
                 return Err(e);
             }
@@ -320,6 +387,7 @@ async fn stream_and_emit(
     }
 
     eprintln!("[stream] done, {} chunks, content len={}", chunk_count, full_content.len());
+    finish_generation_log(app, log_id, "success", "", full_content.len());
     events::emit_done(app, session_id);
     Ok(full_content)
 }
@@ -450,14 +518,24 @@ pub async fn generate_outline(
     // Fetch data synchronously, drop MutexGuard before async
     let project_name = get_project_name(&state, project_id)?;
     let existing_content = get_outline_content(&state, project_id).unwrap_or_default();
-    let preset = get_preset(&state, preset_id)?;
+    let profile = crate::commands::profiles::get_profile(&state, project_id)?;
+    let preset = resolve_preset(&state, preset_id, "outline")?;
     drop(state);
 
     let builder = ContextBuilder::new();
-    let messages = builder.build_outline_context(&project_name, &existing_content);
-    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name);
+    let messages = builder.build_outline_context(&project_name, &existing_content, profile.as_ref());
+    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
 
-    stream_and_emit(&client, messages, &app, &session_id).await?;
+    let log_ctx = GenerationLogContext {
+        project_id: Some(project_id),
+        target_type: "outline".to_string(),
+        target_id: None,
+        command: "generate_outline".to_string(),
+        model_name: preset.model_name,
+        input_chars: existing_content.len(),
+    };
+
+    stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
 
     Ok(session_id)
 }
@@ -591,14 +669,24 @@ pub async fn generate_characters(
     state: State<'_, DbState>,
 ) -> Result<String, String> {
     let outline_content = get_outline_content(&state, project_id)?;
-    let preset = get_preset(&state, preset_id)?;
+    let profile = crate::commands::profiles::get_profile(&state, project_id)?;
+    let preset = resolve_preset(&state, preset_id, "characters")?;
     drop(state);
 
     let builder = ContextBuilder::new();
-    let messages = builder.build_characters_context(&outline_content);
-    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name);
+    let messages = builder.build_characters_context(&outline_content, profile.as_ref());
+    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
 
-    let content = stream_and_emit(&client, messages, &app, &session_id).await?;
+    let log_ctx = GenerationLogContext {
+        project_id: Some(project_id),
+        target_type: "characters".to_string(),
+        target_id: None,
+        command: "generate_characters".to_string(),
+        model_name: preset.model_name,
+        input_chars: outline_content.len(),
+    };
+
+    let content = stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
 
     // Parse JSON and insert characters into database
     let db_state = app.state::<DbState>();
@@ -697,14 +785,24 @@ pub async fn generate_chapters(
 ) -> Result<String, String> {
     let outline_content = get_outline_content(&state, project_id)?;
     let characters_summary = get_characters_summary(&state, project_id)?;
-    let preset = get_preset(&state, preset_id)?;
+    let profile = crate::commands::profiles::get_profile(&state, project_id)?;
+    let preset = resolve_preset(&state, preset_id, "chapters")?;
     drop(state);
 
     let builder = ContextBuilder::new();
-    let messages = builder.build_chapters_context(&outline_content, &characters_summary);
-    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name);
+    let messages = builder.build_chapters_context(&outline_content, &characters_summary, profile.as_ref());
+    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
 
-    let content = stream_and_emit(&client, messages, &app, &session_id).await?;
+    let log_ctx = GenerationLogContext {
+        project_id: Some(project_id),
+        target_type: "chapters".to_string(),
+        target_id: None,
+        command: "generate_chapters".to_string(),
+        model_name: preset.model_name,
+        input_chars: outline_content.len() + characters_summary.len(),
+    };
+
+    let content = stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
 
     // Parse JSON and insert chapters into database
     let db_state = app.state::<DbState>();
@@ -725,26 +823,179 @@ pub async fn generate_content(
 ) -> Result<String, String> {
     let outline_content = get_outline_content(&state, project_id)?;
     let characters_summary = get_characters_summary(&state, project_id)?;
-    let (chapter_title, chapter_summary, _) = get_chapter_info(&state, chapter_id)?;
+    let chapter = get_chapter_full(&state, chapter_id)?;
     let style_config = get_style_config(&state, project_id)?;
     let previous_content = get_previous_content(&state, project_id, chapter_id)?;
     let adjacent_chapters_context = get_adjacent_chapters_context(&state, project_id, chapter_id)?;
+    let profile = crate::commands::profiles::get_profile(&state, project_id)?;
+
+    // Phase 3.7: Inject world items, character states, facts, foreshadows into context
+    let world_summary = crate::commands::world::get_world_items_summary(&state, project_id).unwrap_or_default();
+    let char_states_summary = crate::commands::character_assets::get_latest_character_states_summary(&state, project_id).unwrap_or_default();
+    let facts_summary = crate::commands::story::get_facts_summary(&state, project_id, 30).unwrap_or_default();
+    let foreshadows_summary = crate::commands::story::get_foreshadows_summary(&state, project_id).unwrap_or_default();
+
+    // Phase 4.5: Search knowledge base for relevant chunks
+    let knowledge_query = format!("{} {}", chapter.title, chapter.summary);
+    let knowledge_summary = crate::commands::knowledge::search_knowledge_for_context(&state, project_id, &knowledge_query, 5).unwrap_or_default();
+
+    // Phase 5.2: Inject enabled style rules
+    let style_rules_summary = crate::commands::style_rules::get_enabled_rules_summary(&state, project_id).unwrap_or_default();
+
+    let assets_section = format!("{}{}{}{}{}{}", world_summary, char_states_summary, facts_summary, foreshadows_summary, knowledge_summary, style_rules_summary);
+
+    let preset = resolve_preset(&state, preset_id, "content")?;
+    drop(state);
+
+    let builder = ContextBuilder::new();
+    let task_sheet = chapter_to_task_sheet(&chapter);
+    let messages = builder.build_content_context(
+        &outline_content,
+        &characters_summary,
+        &chapter.title,
+        &chapter.summary,
+        style_config.as_ref(),
+        &previous_content,
+        &adjacent_chapters_context,
+        profile.as_ref(),
+        Some(&task_sheet),
+        &assets_section,
+    );
+    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
+
+    let log_ctx = GenerationLogContext {
+        project_id: Some(project_id),
+        target_type: "content".to_string(),
+        target_id: Some(chapter_id),
+        command: "generate_content".to_string(),
+        model_name: preset.model_name,
+        input_chars: outline_content.len() + characters_summary.len() + chapter.title.len() + chapter.summary.len(),
+    };
+
+    stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
+
+    Ok(session_id)
+}
+
+/// Phase 3.5: chapter_aftercare — 从本章正文提取新增事实、人物状态、新人物候选、伏笔、下一章衔接
+#[tauri::command]
+pub async fn chapter_aftercare(
+    project_id: i64,
+    chapter_id: i64,
+    preset_id: i64,
+    session_id: String,
+    app: AppHandle,
+    state: State<'_, DbState>,
+) -> Result<String, String> {
+    let outline_content = get_outline_content(&state, project_id)?;
+    let characters_summary = get_characters_summary(&state, project_id)?;
+    let chapter = get_chapter_full(&state, chapter_id)?;
+
+    // Get chapter content
+    let content_text: String = {
+        let conn = get_conn(&state)?;
+        conn.query_row(
+            "SELECT content FROM contents WHERE chapter_id = ?1",
+            params![chapter_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default()
+    };
+
+    if content_text.trim().is_empty() {
+        return Err("章节正文为空，无法执行后护理".to_string());
+    }
+
     let preset = get_preset(&state, preset_id)?;
     drop(state);
 
     let builder = ContextBuilder::new();
-    let messages = builder.build_content_context(
+    let messages = builder.build_aftercare_context(
         &outline_content,
         &characters_summary,
-        &chapter_title,
-        &chapter_summary,
-        style_config.as_ref(),
-        &previous_content,
-        &adjacent_chapters_context,
+        &chapter.title,
+        &chapter.summary,
+        &content_text,
     );
-    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name);
 
-    stream_and_emit(&client, messages, &app, &session_id).await?;
+    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
+
+    let log_ctx = GenerationLogContext {
+        project_id: Some(project_id),
+        target_type: "aftercare".to_string(),
+        target_id: Some(chapter_id),
+        command: "chapter_aftercare".to_string(),
+        model_name: preset.model_name,
+        input_chars: content_text.len() + outline_content.len() + characters_summary.len(),
+    };
+
+    stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
+
+    Ok(session_id)
+}
+
+/// Phase 4.6: analyze_text — 对资料生成结构化摘要
+#[tauri::command]
+pub async fn analyze_text(
+    project_id: i64,
+    content: String,
+    preset_id: i64,
+    session_id: String,
+    app: AppHandle,
+    state: State<'_, DbState>,
+) -> Result<String, String> {
+    let preset = get_preset(&state, preset_id)?;
+    drop(state);
+
+    let builder = ContextBuilder::new();
+    let messages = builder.build_analyze_context(&content);
+
+    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
+
+    let log_ctx = GenerationLogContext {
+        project_id: Some(project_id),
+        target_type: "knowledge".to_string(),
+        target_id: None,
+        command: "analyze_text".to_string(),
+        model_name: preset.model_name,
+        input_chars: content.len(),
+    };
+
+    stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
+
+    Ok(session_id)
+}
+
+/// Phase 5.1: extract_style_rules — 从参考文本提取写法规则
+#[tauri::command]
+pub async fn extract_style_rules(
+    project_id: i64,
+    content: String,
+    preset_id: i64,
+    session_id: String,
+    app: AppHandle,
+    state: State<'_, DbState>,
+) -> Result<String, String> {
+    let preset = get_preset(&state, preset_id)?;
+    drop(state);
+
+    let builder = ContextBuilder::new();
+    let messages = builder.build_extract_rules_context(&content);
+
+    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
+
+    let log_ctx = GenerationLogContext {
+        project_id: Some(project_id),
+        target_type: "style_rules".to_string(),
+        target_id: None,
+        command: "extract_style_rules".to_string(),
+        model_name: preset.model_name,
+        input_chars: content.len(),
+    };
+
+    stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
 
     Ok(session_id)
 }
@@ -765,9 +1016,18 @@ pub async fn generate_character_from_description(
 
     let builder = ContextBuilder::new();
     let messages = builder.build_character_from_description_context(&outline_content, &description, &tier);
-    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name);
+    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
 
-    let content = stream_and_emit(&client, messages, &app, &session_id).await?;
+    let log_ctx = GenerationLogContext {
+        project_id: Some(project_id),
+        target_type: "characters".to_string(),
+        target_id: None,
+        command: "generate_character_from_description".to_string(),
+        model_name: preset.model_name,
+        input_chars: description.len() + outline_content.len(),
+    };
+
+    let content = stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
 
     // Parse JSON and insert character into database
     let db_state = app.state::<DbState>();
@@ -788,24 +1048,37 @@ pub async fn polish_content(
 ) -> Result<String, String> {
     let outline_content = get_outline_content(&state, project_id)?;
     let characters_summary = get_characters_summary(&state, project_id)?;
-    let (chapter_title, chapter_summary, _) = get_chapter_info(&state, chapter_id)?;
+    let chapter = get_chapter_full(&state, chapter_id)?;
     let style_config = get_style_config(&state, project_id)?;
     let original_content = get_content_text(&state, chapter_id)?;
-    let preset = get_preset(&state, preset_id)?;
+    let preset = resolve_preset(&state, preset_id, "polish")?;
+
+    // Phase 5.2: Inject enabled style rules
+    let style_rules_summary = crate::commands::style_rules::get_enabled_rules_summary(&state, project_id).unwrap_or_default();
     drop(state);
 
     let builder = ContextBuilder::new();
     let messages = builder.build_polish_content_context(
         &outline_content,
         &characters_summary,
-        &chapter_title,
-        &chapter_summary,
+        &chapter.title,
+        &chapter.summary,
         &original_content,
         style_config.as_ref(),
+        &style_rules_summary,
     );
-    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name);
+    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
 
-    stream_and_emit(&client, messages, &app, &session_id).await?;
+    let log_ctx = GenerationLogContext {
+        project_id: Some(project_id),
+        target_type: "content".to_string(),
+        target_id: Some(chapter_id),
+        command: "polish_content".to_string(),
+        model_name: preset.model_name,
+        input_chars: original_content.len(),
+    };
+
+    stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
 
     Ok(session_id)
 }
@@ -846,9 +1119,18 @@ pub async fn polish_chapter(
 
     let builder = ContextBuilder::new();
     let messages = builder.build_polish_chapter_context(&outline_content, &characters_summary, &original_chapters);
-    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name);
+    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
 
-    let content = stream_and_emit(&client, messages, &app, &session_id).await?;
+    let log_ctx = GenerationLogContext {
+        project_id: Some(project_id),
+        target_type: "chapters".to_string(),
+        target_id: None,
+        command: "polish_chapter".to_string(),
+        model_name: preset.model_name,
+        input_chars: original_chapters.len(),
+    };
+
+    let content = stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
 
     // Parse JSON and update chapters in database
     let db_state = app.state::<DbState>();
@@ -856,6 +1138,363 @@ pub async fn polish_chapter(
     eprintln!("[polish_chapter] updated {} chapters", count);
 
     Ok(session_id)
+}
+
+/// JSON 方向候选数据结构，用于解析 AI 返回
+#[derive(Debug, Deserialize)]
+struct DirectionJson {
+    title: String,
+    genre: String,
+    selling_point: String,
+    target_audience: String,
+    core_conflict: String,
+    reader_promise: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DirectionsResponse {
+    directions: Vec<DirectionJson>,
+}
+
+#[tauri::command]
+pub async fn generate_idea_directions(
+    idea: String,
+    preset_id: i64,
+    session_id: String,
+    app: AppHandle,
+    state: State<'_, DbState>,
+) -> Result<String, String> {
+    let preset = get_preset(&state, preset_id)?;
+    drop(state);
+
+    let builder = ContextBuilder::new();
+    let messages = builder.build_idea_directions_context(&idea);
+    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
+
+    let log_ctx = GenerationLogContext {
+        project_id: None, // 临时项目，不属于任何项目
+        target_type: "idea".to_string(),
+        target_id: None,
+        command: "generate_idea_directions".to_string(),
+        model_name: preset.model_name,
+        input_chars: idea.len(),
+    };
+
+    let content = stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
+
+    // Parse JSON to validate and return structured directions
+    let cleaned = strip_thinking_tags(&content);
+    let json_text = cleaned
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+
+    let _response: DirectionsResponse = serde_json::from_str(json_text)
+        .map_err(|e| format!("方向候选 JSON 解析失败: {}", e))?;
+
+    // Return the cleaned JSON content (front-end will parse it)
+    Ok(json_text.to_string())
+}
+
+#[tauri::command]
+pub async fn generate_outline_from_direction(
+    project_id: i64,
+    direction_json: String,
+    preset_id: i64,
+    session_id: String,
+    app: AppHandle,
+    state: State<'_, DbState>,
+) -> Result<String, String> {
+    let preset = get_preset(&state, preset_id)?;
+    drop(state);
+
+    let builder = ContextBuilder::new();
+    let messages = builder.build_outline_from_direction_context(&direction_json);
+    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
+
+    let log_ctx = GenerationLogContext {
+        project_id: Some(project_id),
+        target_type: "outline".to_string(),
+        target_id: None,
+        command: "generate_outline_from_direction".to_string(),
+        model_name: preset.model_name,
+        input_chars: direction_json.len(),
+    };
+
+    stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
+
+    Ok(session_id)
+}
+
+/// JSON 审核结果数据结构，用于解析 AI 返回
+#[derive(Debug, serde::Serialize, Deserialize)]
+struct ReviewIssueJson {
+    #[serde(rename = "type")]
+    issue_type: String,
+    severity: String,
+    description: String,
+    location: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReviewResponse {
+    overall_score: i64,
+    continuity_score: i64,
+    character_score: i64,
+    pacing_score: i64,
+    issues: Vec<ReviewIssueJson>,
+    suggestions: String,
+}
+
+#[tauri::command]
+pub async fn review_chapter_content(
+    project_id: i64,
+    chapter_id: i64,
+    preset_id: i64,
+    session_id: String,
+    app: AppHandle,
+    state: State<'_, DbState>,
+) -> Result<String, String> {
+    let outline_content = get_outline_content(&state, project_id)?;
+    let characters_summary = get_characters_summary(&state, project_id)?;
+    let chapter = get_chapter_full(&state, chapter_id)?;
+    let content = get_content_text(&state, chapter_id)?;
+    let profile = crate::commands::profiles::get_profile(&state, project_id)?;
+    let preset = resolve_preset(&state, preset_id, "review")?;
+
+    // Phase 5.2: Inject enabled style rules
+    let style_rules_summary = crate::commands::style_rules::get_enabled_rules_summary(&state, project_id).unwrap_or_default();
+    drop(state);
+
+    let builder = ContextBuilder::new();
+    let task_sheet = chapter_to_task_sheet(&chapter);
+    let messages = builder.build_review_context(
+        &outline_content,
+        &characters_summary,
+        &chapter.title,
+        &chapter.summary,
+        &content,
+        Some(&task_sheet),
+        profile.as_ref(),
+        &style_rules_summary,
+    );
+    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
+
+    let log_ctx = GenerationLogContext {
+        project_id: Some(project_id),
+        target_type: "content".to_string(),
+        target_id: Some(chapter_id),
+        command: "review_chapter_content".to_string(),
+        model_name: preset.model_name.clone(),
+        input_chars: content.len() + outline_content.len() + characters_summary.len(),
+    };
+
+    let raw_content = stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
+
+    // Parse JSON and save review to database
+    let cleaned = strip_thinking_tags(&raw_content);
+    let json_text = cleaned
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+
+    let review: ReviewResponse = serde_json::from_str(json_text)
+        .map_err(|e| format!("审核结果 JSON 解析失败: {}", e))?;
+
+    let issues_json = serde_json::to_string(&review.issues)
+        .unwrap_or_else(|_| "[]".to_string());
+
+    let db_state = app.state::<DbState>();
+    let _review_id = crate::commands::chapters::save_review(
+        &db_state,
+        project_id,
+        chapter_id,
+        review.overall_score,
+        review.continuity_score,
+        review.character_score,
+        review.pacing_score,
+        &issues_json,
+        &review.suggestions,
+    )?;
+
+    eprintln!("[review_chapter_content] saved review for chapter {}", chapter_id);
+
+    Ok(session_id)
+}
+
+#[tauri::command]
+pub async fn repair_chapter_content(
+    project_id: i64,
+    chapter_id: i64,
+    preset_id: i64,
+    session_id: String,
+    app: AppHandle,
+    state: State<'_, DbState>,
+) -> Result<String, String> {
+    let outline_content = get_outline_content(&state, project_id)?;
+    let characters_summary = get_characters_summary(&state, project_id)?;
+    let chapter = get_chapter_full(&state, chapter_id)?;
+    let original_content = get_content_text(&state, chapter_id)?;
+    let profile = crate::commands::profiles::get_profile(&state, project_id)?;
+
+    // Get the latest review for this chapter
+    let latest_review = {
+        let conn = get_conn(&state)?;
+        conn.query_row(
+            "SELECT issues_json, suggestions FROM chapter_reviews \
+             WHERE project_id = ?1 AND chapter_id = ?2 \
+             ORDER BY created_at DESC LIMIT 1",
+            params![project_id, chapter_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+    };
+    // Phase 5.2: Inject enabled style rules
+    let style_rules_summary = crate::commands::style_rules::get_enabled_rules_summary(&state, project_id).unwrap_or_default();
+    let preset = resolve_preset(&state, preset_id, "review")?;
+    drop(state);
+
+    let (issues_json, suggestions) = latest_review
+        .ok_or_else(|| "没有找到审核记录，请先执行 AI 审核".to_string())?;
+
+    let builder = ContextBuilder::new();
+    let task_sheet = chapter_to_task_sheet(&chapter);
+    let messages = builder.build_repair_context(
+        &outline_content,
+        &characters_summary,
+        &chapter.title,
+        &chapter.summary,
+        &original_content,
+        &issues_json,
+        &suggestions,
+        Some(&task_sheet),
+        profile.as_ref(),
+        &style_rules_summary,
+    );
+    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
+
+    // Capture input_chars before original_content is moved into snapshot
+    let input_chars = original_content.len() + issues_json.len();
+
+    // Create a snapshot of the original content BEFORE repair
+    // (must happen before stream_and_emit to guarantee snapshot exists before any overwrite)
+    let db_state = app.state::<DbState>();
+    let _ = crate::commands::snapshots::create_snapshot(
+        project_id,
+        "content".to_string(),
+        Some(chapter_id),
+        original_content,
+        "AI 修复前快照".to_string(),
+        db_state,
+    );
+
+    let log_ctx = GenerationLogContext {
+        project_id: Some(project_id),
+        target_type: "content".to_string(),
+        target_id: Some(chapter_id),
+        command: "repair_chapter_content".to_string(),
+        model_name: preset.model_name,
+        input_chars,
+    };
+
+    stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
+
+    Ok(session_id)
+}
+
+/// Batch generate content for multiple chapters with job tracking
+#[tauri::command]
+pub async fn batch_generate_chapters(
+    project_id: i64,
+    chapter_ids: Vec<i64>,
+    preset_id: i64,
+    app: AppHandle,
+    state: State<'_, DbState>,
+) -> Result<i64, String> {
+    // Create a job record
+    let payload_json = serde_json::json!({
+        "chapter_ids": chapter_ids,
+        "completed_chapters": []
+    }).to_string();
+    let job = crate::commands::jobs::create_job(
+        project_id,
+        "batch_generate".to_string(),
+        payload_json,
+        state.clone(),
+    )?;
+
+    let job_id = job.id;
+
+    // Update job status to running
+    let _ = crate::commands::jobs::update_job_status(job_id, "running".to_string(), None, None, state.clone());
+
+    // Spawn a background task to process chapters
+    let app_clone = app.clone();
+    let project_id_copy = project_id;
+    let preset_id_copy = preset_id;
+
+    tauri::async_runtime::spawn(async move {
+        let mut completed_chapters = Vec::new();
+        let mut error_msg: Option<String> = None;
+
+        for (idx, chapter_id) in chapter_ids.iter().enumerate() {
+            // Generate a unique session ID for each chapter
+            let session_id = format!("batch_{}_{}_{}", job_id, chapter_id, uuid::Uuid::new_v4());
+
+            // Get state from app handle
+            let db_state = app_clone.state::<DbState>();
+
+            // Try to generate content for this chapter
+            match generate_content(project_id_copy, *chapter_id, preset_id_copy, session_id, app_clone.clone(), db_state).await {
+                Ok(_) => {
+                    completed_chapters.push(*chapter_id);
+                    // Update job progress
+                    let progress_json = serde_json::json!({
+                        "chapter_ids": chapter_ids,
+                        "completed_chapters": completed_chapters,
+                        "current_index": idx
+                    }).to_string();
+                    let db_state = app_clone.state::<DbState>();
+                    let _ = crate::commands::jobs::update_job_status(
+                        job_id,
+                        "running".to_string(),
+                        Some(progress_json),
+                        None,
+                        db_state,
+                    );
+                }
+                Err(e) => {
+                    error_msg = Some(format!("章节 {} 生成失败: {}", chapter_id, e));
+                    break;
+                }
+            }
+        }
+
+        // Update job final status
+        let db_state = app_clone.state::<DbState>();
+        if error_msg.is_some() {
+            let _ = crate::commands::jobs::update_job_status(
+                job_id,
+                "failed".to_string(),
+                None,
+                error_msg,
+                db_state,
+            );
+        } else {
+            let _ = crate::commands::jobs::update_job_status(
+                job_id,
+                "completed".to_string(),
+                None,
+                None,
+                db_state,
+            );
+        }
+    });
+
+    Ok(job_id)
 }
 
 #[cfg(test)]

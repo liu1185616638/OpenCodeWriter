@@ -1,20 +1,27 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useSettings } from "@/hooks/useSettings";
 import { useProjects } from "@/hooks/useProjects";
 import { useTheme } from "@/hooks/useTheme";
+import { useAI } from "@/contexts/AIContext";
 import type { Project } from "@/types";
-import { getStyleConfig, saveStyleConfig, copyStyleConfig, fetchModels } from "@/lib/tauri";
+import {
+  getStyleConfig, saveStyleConfig, copyStyleConfig, fetchModels,
+  listStyleRules, createStyleRule, updateStyleRule, deleteStyleRule,
+  listModelRoutes, upsertModelRoute,
+} from "@/lib/tauri";
 import { STOPWORDS } from "@/lib/stopwords";
-import type { StyleConfig, ModelPreset, ModelInfo } from "@/types";
+import type { StyleConfig, ModelPreset, ModelInfo, StyleRule, ModelRoute } from "@/types";
 import {
   Plus, Trash2, Save, Loader2, Pencil, X, RefreshCw,
   BookOpen, Type, Heart, Ban, Copy,
+  Sparkles, Check, AlertCircle,
 } from "lucide-react";
 
 const voiceLabels: Record<string, string> = {
@@ -537,13 +544,444 @@ function AboutPage() {
   );
 }
 
+// ===== Style Rules Page =====
+const ruleTypeLabels: Record<string, string> = {
+  narrative: "叙事视角",
+  dialogue: "对话风格",
+  pacing: "节奏控制",
+  description: "描写手法",
+  emotion: "情感表达",
+  structure: "结构技巧",
+};
+
+interface ExtractedRule {
+  rule_type: string;
+  content: string;
+}
+
+function StyleRulesPage({ projectId }: { projectId: number | null }) {
+  const { presets } = useSettings();
+  const { generate, generating, streamedContent, thinkingContent } = useAI();
+  const [rules, setRules] = useState<StyleRule[]>([]);
+  const [referenceText, setReferenceText] = useState("");
+  const [selectedPresetId, setSelectedPresetId] = useState<number | null>(null);
+  const [extractedRules, setExtractedRules] = useState<ExtractedRule[]>([]);
+  const [extracting, setExtracting] = useState(false);
+  const [savedIds, setSavedIds] = useState<Set<number>>(new Set());
+
+  const loadRules = useCallback(async () => {
+    if (!projectId) return;
+    try {
+      const list = await listStyleRules(projectId);
+      setRules(list);
+    } catch (e) {
+      console.error("Failed to load style rules:", e);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    loadRules();
+  }, [loadRules]);
+
+  const handleExtract = async () => {
+    if (!projectId || !selectedPresetId || !referenceText.trim()) return;
+    setExtracting(true);
+    setExtractedRules([]);
+
+    generate({
+      command: "extract_style_rules",
+      args: { projectId, content: referenceText, presetId: selectedPresetId },
+      onComplete: (content) => {
+        // Parse the JSON from the response (strip thinking tags)
+        const cleaned = content
+          .replace(/<thinking>[\s\S]*?<\/thinking>/g, "")
+          .trim()
+          .replace(/^```json\s*/, "")
+          .replace(/^```\s*/, "")
+          .replace(/```\s*$/, "")
+          .trim();
+
+        try {
+          const parsed = JSON.parse(cleaned) as ExtractedRule[];
+          if (Array.isArray(parsed)) {
+            setExtractedRules(parsed);
+          }
+        } catch (e) {
+          console.error("Failed to parse extracted rules:", e);
+        }
+        setExtracting(false);
+      },
+      onError: () => {
+        setExtracting(false);
+      },
+    });
+  };
+
+  const handleSaveRule = async (rule: ExtractedRule, index: number) => {
+    if (!projectId) return;
+    try {
+      const created = await createStyleRule(projectId, rule.rule_type, rule.content);
+      setRules(prev => [created, ...prev]);
+      setSavedIds(prev => new Set(prev).add(index));
+    } catch (e) {
+      console.error("Failed to save rule:", e);
+    }
+  };
+
+  const handleToggleEnabled = async (rule: StyleRule) => {
+    try {
+      const updated = await updateStyleRule(rule.id, { enabled: !rule.enabled });
+      setRules(prev => prev.map(r => r.id === rule.id ? updated : r));
+    } catch (e) {
+      console.error("Failed to toggle rule:", e);
+    }
+  };
+
+  const handleDeleteRule = async (id: number) => {
+    try {
+      await deleteStyleRule(id);
+      setRules(prev => prev.filter(r => r.id !== id));
+    } catch (e) {
+      console.error("Failed to delete rule:", e);
+    }
+  };
+
+  if (!projectId) {
+    return (
+      <div className="flex-1 overflow-auto min-h-0 py-8 px-10">
+        <h2 className="text-xl font-semibold text-foreground mb-6">写法规则</h2>
+        <Card className="rounded-3xl border border-border">
+          <CardContent className="py-8 text-center text-muted-foreground">
+            请先选择一个项目再配置写法规则
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 overflow-auto min-h-0 px-10 py-8">
+      <h2 className="text-xl font-semibold text-foreground mb-6">写法规则</h2>
+
+      {/* Existing rules */}
+      {rules.length > 0 && (
+        <div className="mb-6">
+          <h3 className="text-base font-semibold text-foreground mb-3">已有规则</h3>
+          <div className="space-y-2">
+            {rules.map(rule => (
+              <div key={rule.id} className="flex items-start gap-3 p-4 rounded-2xl bg-card border border-border">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Badge variant={rule.enabled ? "default" : "secondary"}>
+                      {ruleTypeLabels[rule.rule_type] ?? rule.rule_type}
+                    </Badge>
+                    {!rule.enabled && <span className="text-xs text-muted-foreground">已禁用</span>}
+                  </div>
+                  <p className="text-sm text-foreground">{rule.content}</p>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="rounded-full shrink-0"
+                  onClick={() => handleToggleEnabled(rule)}
+                >
+                  {rule.enabled ? "禁用" : "启用"}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="rounded-full text-destructive hover:text-destructive shrink-0"
+                  onClick={() => handleDeleteRule(rule.id)}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Extract rules from reference text */}
+      <Card className="rounded-3xl border border-border shadow-sm">
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <Sparkles className="h-4 w-4" />
+            从参考文本提取写法规则
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div>
+            <label className="text-sm font-medium mb-1.5">参考文本</label>
+            <Textarea
+              value={referenceText}
+              onChange={(e) => setReferenceText(e.target.value.slice(0, 5000))}
+              placeholder="粘贴一段你欣赏的写作文本（最多5000字），AI 将从中提取可复用的写法规则..."
+              className="min-h-[120px] rounded-xl"
+            />
+            <p className="text-xs text-muted-foreground mt-1">{referenceText.length} / 5000 字</p>
+          </div>
+          <div>
+            <label className="text-sm font-medium mb-1.5">使用模型</label>
+            <Select
+              value={selectedPresetId?.toString() ?? ""}
+              onValueChange={(v) => setSelectedPresetId(Number(v))}
+            >
+              <SelectTrigger className="rounded-xl">
+                <SelectValue placeholder="选择模型预设" />
+              </SelectTrigger>
+              <SelectContent>
+                {presets.map(p => (
+                  <SelectItem key={p.id} value={p.id.toString()}>{p.name} — {p.model_name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <Button
+            onClick={handleExtract}
+            disabled={!referenceText.trim() || !selectedPresetId || generating}
+            className="rounded-full px-4 gap-1.5"
+          >
+            {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+            {generating ? "提取中..." : "提取规则"}
+          </Button>
+
+          {/* Thinking content during extraction */}
+          {extracting && thinkingContent && (
+            <div className="rounded-xl bg-muted p-3 text-xs text-muted-foreground max-h-40 overflow-auto">
+              <p className="font-medium mb-1">AI 分析中...</p>
+              <p className="whitespace-pre-wrap">{thinkingContent.slice(-500)}</p>
+            </div>
+          )}
+
+          {/* Streamed content during extraction */}
+          {extracting && streamedContent && (
+            <div className="rounded-xl bg-muted p-3 text-xs text-muted-foreground max-h-40 overflow-auto">
+              <p className="whitespace-pre-wrap">{streamedContent.slice(-500)}</p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Extracted rules for review */}
+      {extractedRules.length > 0 && (
+        <div className="mt-5">
+          <h3 className="text-base font-semibold text-foreground mb-3 flex items-center gap-2">
+            <Check className="h-4 w-4" />
+            提取结果（点击保存加入规则池）
+          </h3>
+          <div className="space-y-2">
+            {extractedRules.map((rule, index) => (
+              <div key={index} className="flex items-start gap-3 p-4 rounded-2xl bg-card border border-border">
+                <div className="flex-1 min-w-0">
+                  <Badge variant="outline" className="mb-1">
+                    {ruleTypeLabels[rule.rule_type] ?? rule.rule_type}
+                  </Badge>
+                  <p className="text-sm text-foreground">{rule.content}</p>
+                </div>
+                <Button
+                  variant={savedIds.has(index) ? "ghost" : "default"}
+                  size="sm"
+                  className="rounded-full shrink-0 gap-1"
+                  disabled={savedIds.has(index)}
+                  onClick={() => handleSaveRule(rule, index)}
+                >
+                  {savedIds.has(index) ? (
+                    <><Check className="h-3 w-3" />已保存</>
+                  ) : (
+                    <><Plus className="h-3 w-3" />保存</>
+                  )}
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ===== Model Routes Page =====
+const taskTypeLabels: Record<string, string> = {
+  outline: "大纲生成",
+  characters: "人物生成",
+  chapters: "章节目录",
+  content: "正文生成",
+  polish: "正文润色",
+  review: "章节审核",
+};
+
+function ModelRoutesPage() {
+  const { presets } = useSettings();
+  const [routes, setRoutes] = useState<ModelRoute[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [savingKey, setSavingKey] = useState<string | null>(null);
+
+  const loadRoutes = useCallback(async () => {
+    try {
+      setLoading(true);
+      const list = await listModelRoutes();
+      setRoutes(list);
+    } catch (e) {
+      console.error("Failed to load model routes:", e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadRoutes();
+  }, [loadRoutes]);
+
+  const getRoute = (taskType: string): ModelRoute | undefined => {
+    return routes.find(r => r.task_type === taskType);
+  };
+
+  const handleSave = async (taskType: string, primaryId: number | null, fallbackId: number | null) => {
+    setSavingKey(taskType);
+    try {
+      const updated = await upsertModelRoute(taskType, primaryId, fallbackId);
+      setRoutes(prev => {
+        const idx = prev.findIndex(r => r.task_type === taskType);
+        if (idx >= 0) {
+          const copy = [...prev];
+          copy[idx] = updated;
+          return copy;
+        }
+        return [...prev, updated];
+      });
+    } catch (e) {
+      console.error("Failed to save route:", e);
+    } finally {
+      setSavingKey(null);
+    }
+  };
+
+  return (
+    <div className="flex-1 overflow-auto min-h-0 px-10 py-8">
+      <h2 className="text-xl font-semibold text-foreground mb-2">模型路由</h2>
+      <p className="text-sm text-muted-foreground mb-6">
+        为不同任务类型配置默认模型。当用户未手动选择模型时，系统将按路由配置选择模型。
+      </p>
+
+      {loading ? (
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {Object.entries(taskTypeLabels).map(([taskType, label]) => {
+            const route = getRoute(taskType);
+            return (
+              <ModelRouteRow
+                key={taskType}
+                taskType={taskType}
+                label={label}
+                presets={presets}
+                primaryId={route?.primary_preset_id ?? null}
+                fallbackId={route?.fallback_preset_id ?? null}
+                saving={savingKey === taskType}
+                onSave={handleSave}
+              />
+            );
+          })}
+        </div>
+      )}
+
+      {presets.length === 0 && (
+        <Card className="rounded-3xl border border-border mt-4">
+          <CardContent className="py-6 text-center text-muted-foreground flex items-center justify-center gap-2">
+            <AlertCircle className="h-4 w-4" />
+            请先在"模型配置"中添加模型预设
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function ModelRouteRow({
+  taskType, label, presets, primaryId, fallbackId, saving, onSave,
+}: {
+  taskType: string;
+  label: string;
+  presets: ModelPreset[];
+  primaryId: number | null;
+  fallbackId: number | null;
+  saving: boolean;
+  onSave: (taskType: string, primaryId: number | null, fallbackId: number | null) => void;
+}) {
+  const [primary, setPrimary] = useState<string>(primaryId?.toString() ?? "none");
+  const [fallback, setFallback] = useState<string>(fallbackId?.toString() ?? "none");
+
+  // Sync local state when props change
+  useEffect(() => {
+    setPrimary(primaryId?.toString() ?? "none");
+    setFallback(fallbackId?.toString() ?? "none");
+  }, [primaryId, fallbackId]);
+
+  const hasChanges =
+    primary !== (primaryId?.toString() ?? "none") ||
+    fallback !== (fallbackId?.toString() ?? "none");
+
+  return (
+    <div className="flex items-center gap-4 p-4 rounded-2xl bg-card border border-border">
+      <div className="w-28 shrink-0">
+        <span className="text-sm font-medium text-foreground">{label}</span>
+      </div>
+      <div className="flex-1">
+        <Select value={primary} onValueChange={setPrimary}>
+          <SelectTrigger className="rounded-xl">
+            <SelectValue placeholder="主模型" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">不配置</SelectItem>
+            {presets.map(p => (
+              <SelectItem key={p.id} value={p.id.toString()}>{p.name} — {p.model_name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="flex-1">
+        <Select value={fallback} onValueChange={setFallback}>
+          <SelectTrigger className="rounded-xl">
+            <SelectValue placeholder="备用模型" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">不配置</SelectItem>
+            {presets.map(p => (
+              <SelectItem key={p.id} value={p.id.toString()}>{p.name} — {p.model_name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <Button
+        size="sm"
+        className="rounded-full shrink-0 gap-1"
+        disabled={!hasChanges || saving}
+        onClick={() => onSave(
+          taskType,
+          primary === "none" ? null : Number(primary),
+          fallback === "none" ? null : Number(fallback),
+        )}
+      >
+        {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+        保存
+      </Button>
+    </div>
+  );
+}
+
 // ===== Main Settings Component =====
 export function Settings({ onBack: _onBack, projectId, activeTab, currentProject }: { onBack: () => void; projectId: number | null; activeTab: string; currentProject: Project | null }) {
   switch (activeTab) {
     case "writing-style":
       return <WritingStylePage projectId={projectId} currentProject={currentProject} />;
+    case "style-rules":
+      return <StyleRulesPage projectId={projectId} />;
     case "model-config":
       return <ModelConfigPage />;
+    case "model-routes":
+      return <ModelRoutesPage />;
     case "shortcuts":
       return <ShortcutsPage />;
     case "about":

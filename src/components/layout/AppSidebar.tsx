@@ -30,30 +30,37 @@ import {
   CheckCircle2, Circle, AlertTriangle, Dot,
   PanelLeft, EllipsisVertical, ArrowLeft,
   BookOpen as BookIcon,
-  PenLine, Cpu, Keyboard, Info,
-  FolderOpen, Loader2,
+  PenLine, Cpu, Keyboard, Info, Globe, Library,
+  FolderOpen, Loader2, History, Settings as SettingsIcon, Sparkles, Route,
 } from "lucide-react";
 import { getProjectProgress, isStale } from "@/lib/tauri";
+import { GenerationHistoryPanel } from "@/components/ai/GenerationHistoryPanel";
 
 const stages: { key: CreationStage; label: string; icon: React.ElementType }[] = [
   { key: "outline", label: "大纲", icon: FileText },
   { key: "characters", label: "人物", icon: Users },
   { key: "chapters", label: "目录", icon: BookOpen },
   { key: "content", label: "正文", icon: Pen },
+  { key: "world", label: "世界观", icon: Globe },
+  { key: "knowledge", label: "知识库", icon: Library },
 ];
 
-const settingsNavItems: { key: "writing-style" | "model-config" | "shortcuts" | "about"; label: string; icon: React.ElementType }[] = [
+const settingsNavItems: { key: "writing-style" | "model-config" | "style-rules" | "model-routes" | "shortcuts" | "about"; label: string; icon: React.ElementType }[] = [
   { key: "writing-style", label: "写作风格", icon: PenLine },
+  { key: "style-rules", label: "写法规则", icon: Sparkles },
   { key: "model-config", label: "模型配置", icon: Cpu },
+  { key: "model-routes", label: "模型路由", icon: Route },
   { key: "shortcuts", label: "快捷键", icon: Keyboard },
   { key: "about", label: "关于", icon: Info },
 ];
 
-const staleTargetMap: Record<CreationStage, string> = {
+const staleTargetMap: Record<string, string> = {
   outline: "outline",
   characters: "characters",
   chapters: "chapters",
   content: "contents",
+  world: "world",
+  knowledge: "knowledge",
 };
 
 type StageStatus = "done" | "active" | "ready" | "pending" | "stale";
@@ -140,6 +147,7 @@ function SidebarFooterStatus({
   onNewProject,
   onOpenSettings,
   onToggleTheme,
+  onShowHistory,
   theme,
 }: {
   currentProject: Project | null;
@@ -148,6 +156,7 @@ function SidebarFooterStatus({
   onNewProject: () => void;
   onOpenSettings?: () => void;
   onToggleTheme: () => void;
+  onShowHistory?: () => void;
   theme: string;
 }) {
   return (
@@ -197,6 +206,12 @@ function SidebarFooterStatus({
               设置
             </DropdownMenuItem>
           )}
+          {onShowHistory && currentProject && (
+            <DropdownMenuItem onClick={onShowHistory}>
+              <History className="mr-2 h-4 w-4" />
+              生成历史
+            </DropdownMenuItem>
+          )}
           <DropdownMenuSeparator />
           <DropdownMenuItem onClick={() => { /* switch project */ }}>
             <FolderOpen className="mr-2 h-4 w-4" />
@@ -220,6 +235,8 @@ export function AppSidebar({
   onOpenSettings,
   onSelectSettingsTab,
   onBackFromSettings,
+  onOpenProjectProfile,
+  onStartIdeaWizard,
 }: {
   currentProject: Project | null;
   currentStage: CreationStage;
@@ -230,22 +247,27 @@ export function AppSidebar({
   onSelectStage: (stage: CreationStage) => void;
   onNewProject: () => void;
   onOpenSettings: () => void;
-  onSelectSettingsTab: (tab: "writing-style" | "model-config" | "shortcuts" | "about") => void;
+  onSelectSettingsTab: (tab: "writing-style" | "model-config" | "style-rules" | "model-routes" | "shortcuts" | "about") => void;
   onBackFromSettings: () => void;
+  onOpenProjectProfile?: () => void;
+  onStartIdeaWizard?: () => void;
 }) {
   const { projects } = useProjects();
   const { currentPreset } = useSettings();
   const { theme, toggle } = useTheme();
-  const [stageStatuses, setStageStatuses] = useState<Record<CreationStage, StageStatus>>({
+  const [showHistory, setShowHistory] = useState(false);
+  const [stageStatuses, setStageStatuses] = useState<Record<string, StageStatus>>({
     outline: "pending",
     characters: "pending",
     chapters: "pending",
     content: "pending",
+    world: "pending",
+    knowledge: "pending",
   });
 
   useEffect(() => {
     if (!currentProject) {
-      setStageStatuses({ outline: "pending", characters: "pending", chapters: "pending", content: "pending" });
+      setStageStatuses({ outline: "pending", characters: "pending", chapters: "pending", content: "pending", world: "pending", knowledge: "pending" });
       return;
     }
 
@@ -259,11 +281,13 @@ export function AppSidebar({
         progress = await getProjectProgress(currentProject!.id);
       } catch { /* ignore */ }
 
-      const hasContent: Record<CreationStage, boolean> = {
+      const hasContent: Record<string, boolean> = {
         outline: progress.has_outline,
         characters: progress.character_count > 0,
         chapters: progress.chapter_count > 0,
         content: progress.has_content,
+        world: false,
+        knowledge: false,
       };
 
       for (const stage of stageOrder) {
@@ -343,6 +367,13 @@ export function AppSidebar({
           theme={theme}
         />
         <SidebarRail />
+        {currentProject && (
+          <GenerationHistoryPanel
+            open={showHistory}
+            onOpenChange={setShowHistory}
+            projectId={currentProject.id}
+          />
+        )}
       </Sidebar>
     );
   }
@@ -368,6 +399,16 @@ export function AppSidebar({
                         <span className="min-w-0 flex-1 truncate text-left group-data-[collapsible=icon]:hidden">{currentProject.name}</span>
                       </div>
                     </SidebarMenuItem>
+                    {onOpenProjectProfile && (
+                      <SidebarMenuItem>
+                        <SidebarNavButton
+                          active={view === "project-profile"}
+                          icon={SettingsIcon}
+                          label="项目设定"
+                          onClick={onOpenProjectProfile}
+                        />
+                      </SidebarMenuItem>
+                    )}
                   </SidebarMenu>
                 </SidebarGroupContent>
               </SidebarGroup>
@@ -386,6 +427,11 @@ export function AppSidebar({
                     <SidebarMenuItem>
                       <SidebarNavButton icon={Plus} label="新建项目" onClick={onNewProject} active />
                     </SidebarMenuItem>
+                    {onStartIdeaWizard && (
+                      <SidebarMenuItem>
+                        <SidebarNavButton icon={Sparkles} label="一句话开书" onClick={onStartIdeaWizard} />
+                      </SidebarMenuItem>
+                    )}
                   </SidebarMenu>
                 </SidebarGroupContent>
               </SidebarGroup>
@@ -427,10 +473,18 @@ export function AppSidebar({
         connected={Boolean(currentPreset)}
         onNewProject={onNewProject}
         onOpenSettings={onOpenSettings}
+        onShowHistory={() => setShowHistory(true)}
         onToggleTheme={toggle}
         theme={theme}
       />
       <SidebarRail />
+      {currentProject && (
+        <GenerationHistoryPanel
+          open={showHistory}
+          onOpenChange={setShowHistory}
+          projectId={currentProject.id}
+        />
+      )}
     </Sidebar>
   );
 }

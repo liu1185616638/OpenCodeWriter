@@ -13,14 +13,18 @@ import { OutlineEditor } from "@/views/OutlineEditor";
 import { CharacterEditor } from "@/views/CharacterEditor";
 import { ChapterEditor } from "@/views/ChapterEditor";
 import { ContentEditor } from "@/views/ContentEditor";
+import { WorldEditor } from "@/views/WorldEditor";
+import { KnowledgeEditor } from "@/views/KnowledgeEditor";
 import { Settings } from "@/views/Settings";
+import { ProjectProfileView } from "@/views/ProjectProfileView";
+import { IdeaToProjectWizard } from "@/views/IdeaToProjectWizard";
 import { useTheme } from "@/hooks/useTheme";
 import { useKeybindings } from "@/hooks/useKeybindings";
 import { updateProjectStage } from "@/lib/tauri";
 import type { Project, CreationStage } from "@/types";
 
-type AppView = "setup" | "project-list" | "workspace" | "settings";
-type SettingsTab = "writing-style" | "model-config" | "shortcuts" | "about";
+type AppView = "setup" | "project-list" | "workspace" | "settings" | "idea-wizard" | "project-profile";
+type SettingsTab = "writing-style" | "model-config" | "style-rules" | "model-routes" | "shortcuts" | "about";
 
 function WorkspaceTitleBar({ onNewProject, onToggleTheme }: { onNewProject: () => void; onToggleTheme: () => void }) {
   const { toggleSidebar } = useSidebar();
@@ -142,16 +146,33 @@ function AppInner() {
     }
 
     if (view === "project-list") {
-      return <ProjectList onSelectProject={handleSelectProject} />;
+      return <ProjectList onSelectProject={handleSelectProject} onStartIdeaWizard={() => setView("idea-wizard")} />;
     }
 
     if (view === "settings") {
       return <Settings onBack={currentProject ? () => setView("workspace") : handleBackToProjects} projectId={currentProject?.id ?? null} activeTab={settingsTab} currentProject={currentProject} />;
     }
 
+    if (view === "idea-wizard") {
+      return (
+        <IdeaToProjectWizard
+          onComplete={(project) => {
+            setCurrentProject(project);
+            setCurrentStage("outline");
+            setView("workspace");
+          }}
+          onCancel={() => setView("project-list")}
+        />
+      );
+    }
+
+    if (view === "project-profile" && currentProject) {
+      return <ProjectProfileView project={currentProject} />;
+    }
+
     // Workspace view
     if (!currentProject) {
-      return <ProjectList onSelectProject={handleSelectProject} />;
+      return <ProjectList onSelectProject={handleSelectProject} onStartIdeaWizard={() => setView("idea-wizard")} />;
     }
 
     switch (currentStage) {
@@ -163,6 +184,10 @@ function AppInner() {
         return <ChapterEditor project={currentProject} />;
       case "content":
         return <ContentEditor project={currentProject} />;
+      case "world":
+        return <WorldEditor project={currentProject} />;
+      case "knowledge":
+        return <KnowledgeEditor project={currentProject} />;
     }
   };
 
@@ -197,6 +222,8 @@ function AppInner() {
           onOpenSettings={handleOpenSettings}
           onSelectSettingsTab={setSettingsTab}
           onBackFromSettings={handleBackFromSettings}
+          onOpenProjectProfile={() => setView("project-profile")}
+          onStartIdeaWizard={() => setView("idea-wizard")}
         />
         <SidebarInset>
           <WorkspaceTitleBar onNewProject={handleNewProject} onToggleTheme={toggleTheme} />

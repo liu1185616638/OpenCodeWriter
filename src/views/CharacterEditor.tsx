@@ -20,8 +20,10 @@ import { EditorActionBar } from "@/components/editor/EditorActionBar";
 import { ModelPresetSelect } from "@/components/editor/ModelPresetSelect";
 import { EditorStatusText } from "@/components/editor/EditorStatusText";
 import type { Project, Character, CharacterTier } from "@/types";
-import { Sparkles, Trash2, ChevronDown, Square, UserPlus, Shield, Star } from "lucide-react";
+import { Sparkles, Trash2, ChevronDown, Square, UserPlus, Shield, Star, Heart, Users } from "lucide-react";
 import { toast } from "sonner";
+import { useCharacterAssets } from "@/hooks/useCharacterAssets";
+import { Badge } from "@/components/ui/badge";
 
 const tierLabels: Record<CharacterTier, string> = {
   main: "主角",
@@ -167,12 +169,18 @@ export function CharacterEditor({ project }: { project: Project }) {
   const { outline, load: loadOutline } = useOutline(project.id);
   const { currentPreset, currentPresetId, switchPreset, presets } = useSettings();
   const { generating, streamedContent, thinkingContent, generatingStage, error, generate, cancel } = useAI();
+  const { relations, states, load: loadAssets, createRelation, removeRelation, removeState } = useCharacterAssets(project.id);
 
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [newDescription, setNewDescription] = useState("");
   const [newTier, setNewTier] = useState<CharacterTier>("supporting");
+  const [activeTab, setActiveTab] = useState<"characters" | "relations" | "states">("characters");
+  const [showAddRelation, setShowAddRelation] = useState(false);
+  const [newRelSource, setNewRelSource] = useState<number | null>(null);
+  const [newRelTarget, setNewRelTarget] = useState<number | null>(null);
+  const [newRelType, setNewRelType] = useState("");
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); loadAssets(); }, [load, loadAssets]);
   useEffect(() => { loadOutline(); }, [loadOutline]);
 
   const outlineEmpty = !outline || outline.status === "empty" || !outline.content;
@@ -288,6 +296,35 @@ export function CharacterEditor({ project }: { project: Project }) {
       alerts={alertsContent}
       actionBar={actionBarContent}
     >
+      {/* Tab switcher */}
+      <div className="flex gap-1 px-4 pt-2 sm:px-6">
+        <Button
+          size="sm"
+          variant={activeTab === "characters" ? "default" : "ghost"}
+          onClick={() => setActiveTab("characters")}
+          className="rounded-full gap-1.5"
+        >
+          <UserPlus className="h-3.5 w-3.5" />人物
+        </Button>
+        <Button
+          size="sm"
+          variant={activeTab === "relations" ? "default" : "ghost"}
+          onClick={() => setActiveTab("relations")}
+          className="rounded-full gap-1.5"
+        >
+          <Users className="h-3.5 w-3.5" />关系
+        </Button>
+        <Button
+          size="sm"
+          variant={activeTab === "states" ? "default" : "ghost"}
+          onClick={() => setActiveTab("states")}
+          className="rounded-full gap-1.5"
+        >
+          <Heart className="h-3.5 w-3.5" />状态
+        </Button>
+      </div>
+
+      {activeTab === "characters" && (
       <AppScrollArea>
         <div className="w-full min-w-0 max-w-full space-y-6">
           {generating && generatingStage === "characters" && (
@@ -329,6 +366,116 @@ export function CharacterEditor({ project }: { project: Project }) {
           )}
         </div>
       </AppScrollArea>
+      )}
+
+      {activeTab === "relations" && (
+        <AppScrollArea>
+          <div className="w-full min-w-0 max-w-full space-y-4 px-4 py-4 sm:px-6">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-foreground">角色关系</h3>
+              <Button size="sm" variant="outline" onClick={() => setShowAddRelation(!showAddRelation)} className="rounded-full gap-1.5">
+                <UserPlus className="h-3.5 w-3.5" />添加关系
+              </Button>
+            </div>
+
+            {showAddRelation && (
+              <div className="rounded-2xl border border-border bg-card p-4 space-y-3">
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <div>
+                    <label className="text-xs text-muted-foreground">角色 A</label>
+                    <Select value={String(newRelSource ?? "")} onValueChange={(v) => setNewRelSource(Number(v))}>
+                      <SelectTrigger className="mt-1"><SelectValue placeholder="选择" /></SelectTrigger>
+                      <SelectContent>
+                        {characters.map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-muted-foreground">角色 B</label>
+                    <Select value={String(newRelTarget ?? "")} onValueChange={(v) => setNewRelTarget(Number(v))}>
+                      <SelectTrigger className="mt-1"><SelectValue placeholder="选择" /></SelectTrigger>
+                      <SelectContent>
+                        {characters.map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-muted-foreground">关系类型</label>
+                    <Input value={newRelType} onChange={(e) => setNewRelType(e.target.value)} placeholder="如：师徒、仇敌、恋人" className="mt-1" />
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  disabled={!newRelSource || !newRelTarget || !newRelType.trim()}
+                  onClick={async () => {
+                    await createRelation(newRelSource!, newRelTarget!, newRelType.trim());
+                    setNewRelSource(null); setNewRelTarget(null); setNewRelType("");
+                    setShowAddRelation(false);
+                    toast.success("关系已创建");
+                  }}
+                  className="rounded-full"
+                >创建</Button>
+              </div>
+            )}
+
+            {relations.map(rel => {
+              const source = characters.find(c => c.id === rel.source_character_id);
+              const target = characters.find(c => c.id === rel.target_character_id);
+              return (
+                <div key={rel.id} className="rounded-2xl border border-border bg-card p-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-sm">
+                      <span className="font-medium">{source?.name || "?"}</span>
+                      <span className="text-muted-foreground">→</span>
+                      <span className="font-medium">{target?.name || "?"}</span>
+                      <Badge variant="secondary" className="text-xs">{rel.relation_type || "未分类"}</Badge>
+                      {rel.tension && <Badge variant="destructive" className="text-xs">{rel.tension}</Badge>}
+                    </div>
+                    <Button size="sm" variant="ghost" onClick={() => removeRelation(rel.id)} className="rounded-full h-7 w-7 p-0">
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  </div>
+                  {rel.summary && <p className="mt-1 text-xs text-muted-foreground">{rel.summary}</p>}
+                </div>
+              );
+            })}
+
+            {relations.length === 0 && !showAddRelation && (
+              <p className="py-8 text-center text-muted-foreground">暂无角色关系，点击「添加关系」开始创建</p>
+            )}
+          </div>
+        </AppScrollArea>
+      )}
+
+      {activeTab === "states" && (
+        <AppScrollArea>
+          <div className="w-full min-w-0 max-w-full space-y-4 px-4 py-4 sm:px-6">
+            <h3 className="text-sm font-semibold text-foreground">角色状态</h3>
+            {states.length === 0 && (
+              <p className="py-8 text-center text-muted-foreground">暂无角色状态记录<br/>执行章节后护理后可自动提取</p>
+            )}
+            {states.map(st => {
+              const char = characters.find(c => c.id === st.character_id);
+              return (
+                <div key={st.id} className="rounded-2xl border border-border bg-card p-3">
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-sm">{char?.name || "未知角色"}</span>
+                    <Button size="sm" variant="ghost" onClick={() => removeState(st.id)} className="rounded-full h-7 w-7 p-0">
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  </div>
+                  <div className="mt-1 space-y-0.5 text-xs text-muted-foreground">
+                    {st.state_summary && <p>状态：{st.state_summary}</p>}
+                    {st.goal && <p>目标：{st.goal}</p>}
+                    {st.emotion && <p>情绪：{st.emotion}</p>}
+                    {st.location && <p>位置：{st.location}</p>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </AppScrollArea>
+      )}
 
       {/* New character dialog — description-first approach */}
       <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>

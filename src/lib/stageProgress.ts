@@ -25,5 +25,9 @@ export function getNextStep(stage: CreationStage, input: StageProgressInput): st
       return input.selectedChapterId
         ? "可以生成或编辑当前章节正文。"
         : "先选择一个章节。";
+    case "world":
+      return "维护世界观、角色关系和故事资产。";
+    case "knowledge":
+      return "导入参考资料，支持全文检索和拆书分析。";
   }
 }

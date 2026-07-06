@@ -4,6 +4,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useChapters } from "@/hooks/useChapters";
 import { useContent } from "@/hooks/useContent";
 import { useSettings } from "@/hooks/useSettings";
@@ -21,10 +22,12 @@ import { ModelPresetSelect } from "@/components/editor/ModelPresetSelect";
 import { EditorStatusText } from "@/components/editor/EditorStatusText";
 import { GenerationStatusBar } from "@/components/ai/GenerationStatusBar";
 import { GenerateConfirmDialog } from "@/components/ai/GenerateConfirmDialog";
+import { ChapterQualityPanel } from "@/components/ai/ChapterQualityPanel";
+import { AftercarePanel } from "@/components/ai/AftercarePanel";
 import type { GenerationApplyMode } from "@/types/ai";
 import type { Project } from "@/types";
-import { saveContent } from "@/lib/tauri";
-import { Save, Sparkles, Square, WandSparkles } from "lucide-react";
+import { saveContent, batchGenerateChapters } from "@/lib/tauri";
+import { Save, Sparkles, Square, WandSparkles, ClipboardCheck, HeartPulse, Zap, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
 
 export function ContentEditor({ project }: { project: Project }) {
@@ -35,6 +38,11 @@ export function ContentEditor({ project }: { project: Project }) {
   const { generating, streamedContent, thinkingContent, generatingStage, error, generate, cancel, generationMeta, generatedCharCount, elapsedMs } = useAI();
   const [text, setText] = useState("");
   const [showGenerateConfirm, setShowGenerateConfirm] = useState(false);
+  const [showQualityPanel, setShowQualityPanel] = useState(false);
+  const [showAftercarePanel, setShowAftercarePanel] = useState(false);
+  const [showBatchGenerateDialog, setShowBatchGenerateDialog] = useState(false);
+  const [batchGenerating, setBatchGenerating] = useState(false);
+  const [selectedChapterIds, setSelectedChapterIds] = useState<number[]>([]);
   const applyModeRef = useRef<GenerationApplyMode>("replace");
 
   const stopwords = useStopwords(text);
@@ -82,9 +90,9 @@ export function ContentEditor({ project }: { project: Project }) {
   }, [content]);
 
   useEffect(() => {
-    // During content generation: sync streamed text for live display
+    // During content or repair generation: sync streamed text for live display
     // After generation ends: auto-save effect handles saving + reload
-    if (generating && generatingStage === "content") {
+    if (generating && (generatingStage === "content" || generatingStage === "repair")) {
       setText(streamedContent);
     }
   }, [streamedContent, generating, generatingStage]);
@@ -93,12 +101,19 @@ export function ContentEditor({ project }: { project: Project }) {
   const prevGeneratingRef = useRef(false);
   const generatingChapterIdRef = useRef<number | null>(null);
   const textBeforeGenerationRef = useRef("");
+  const generatingStageRef = useRef<string | undefined>(undefined);
 
-  // Auto-save when generation finishes
+  // Auto-save when content generation finishes (not for review/repair)
   useEffect(() => {
     if (prevGeneratingRef.current && !generating) {
       // 立即重置，防止 deps 变化时重复触发
       prevGeneratingRef.current = false;
+      const stage = generatingStageRef.current;
+      generatingStageRef.current = undefined;
+
+      // Only auto-save for content/polish stage, not review or repair
+      if (stage !== "content") return;
+
       const chapterId = generatingChapterIdRef.current;
       if (!chapterId || !streamedContent) return;
       const cleaned = stripThinking(streamedContent);
@@ -119,7 +134,8 @@ export function ContentEditor({ project }: { project: Project }) {
       return () => clearTimeout(timer);
     }
     prevGeneratingRef.current = generating;
-  }, [generating, streamedContent, project.id]);
+    generatingStageRef.current = generatingStage;
+  }, [generating, streamedContent, project.id, generatingStage]);
 
   const handleSave = useCallback(async () => {
     if (selectedChapterId) {
@@ -180,6 +196,29 @@ export function ContentEditor({ project }: { project: Project }) {
       },
     });
   }, [currentPreset, selectedChapterId, generate, project.id]);
+
+  const handleBatchGenerate = useCallback(async () => {
+    if (!currentPreset || selectedChapterIds.length === 0) return;
+    setBatchGenerating(true);
+    try {
+      await batchGenerateChapters(project.id, selectedChapterIds, currentPreset.id);
+      toast.success(`批量生成任务已创建,可在任务中心查看进度`);
+      setShowBatchGenerateDialog(false);
+      setSelectedChapterIds([]);
+    } catch (err) {
+      toast.error("批量生成失败", { description: String(err) });
+    } finally {
+      setBatchGenerating(false);
+    }
+  }, [currentPreset, selectedChapterIds, project.id]);
+
+  const toggleChapterSelection = useCallback((chapterId: number) => {
+    setSelectedChapterIds(prev =>
+      prev.includes(chapterId)
+        ? prev.filter(id => id !== chapterId)
+        : [...prev, chapterId]
+    );
+  }, []);
 
   useAppEvents({
     onGenerate: handleGenerateClick,
@@ -252,6 +291,16 @@ export function ContentEditor({ project }: { project: Project }) {
             </Button>
           )}
 
+          <Button
+            variant="outline"
+            onClick={() => setShowBatchGenerateDialog(true)}
+            disabled={!currentPreset || chapters.length === 0}
+            className="rounded-full px-4 py-2.5 gap-1.5"
+          >
+            <Zap className="h-4 w-4" />
+            批量生成
+          </Button>
+
           <ModelPresetSelect
             value={currentPresetId ?? null}
             presets={presets}
@@ -273,6 +322,32 @@ export function ContentEditor({ project }: { project: Project }) {
 
           <Button
             variant="outline"
+            onClick={() => {
+              setShowAftercarePanel(prev => !prev);
+              setShowQualityPanel(false);
+            }}
+            disabled={!selectedChapterId}
+            className={`rounded-full px-4 py-2.5 gap-1.5 ${showAftercarePanel ? "bg-accent" : ""}`}
+          >
+            <HeartPulse className="h-4 w-4" />
+            后护理
+          </Button>
+
+          <Button
+            variant="outline"
+            onClick={() => {
+              setShowQualityPanel(prev => !prev);
+              setShowAftercarePanel(false);
+            }}
+            disabled={!selectedChapterId}
+            className={`rounded-full px-4 py-2.5 gap-1.5 ${showQualityPanel ? "bg-accent" : ""}`}
+          >
+            <ClipboardCheck className="h-4 w-4" />
+            质量审核
+          </Button>
+
+          <Button
+            variant="outline"
             onClick={handleSave}
             disabled={saving || !selectedChapterId || generating}
             className="rounded-full px-4 py-2.5 gap-1.5"
@@ -283,7 +358,7 @@ export function ContentEditor({ project }: { project: Project }) {
         </EditorActionBar>
       }
     >
-      {/* Main area: chapter list + editor */}
+      {/* Main area: chapter list + editor + quality panel */}
       <div className="flex min-h-0 min-w-0 h-full overflow-hidden">
         {/* Chapter list */}
         <ScrollArea className="w-48 shrink-0 border-r border-border">
@@ -310,7 +385,7 @@ export function ContentEditor({ project }: { project: Project }) {
           <div className="flex min-h-full w-full min-w-0 flex-col">
             {selectedChapterId ? (
               <>
-                {generating ? (
+                {generating && generatingStage !== "review" ? (
                   <StreamingView
                     content={text}
                     thinkingContent={thinkingContent}
@@ -324,7 +399,7 @@ export function ContentEditor({ project }: { project: Project }) {
                     placeholder="正文内容..."
                   />
                 )}
-                {stopwords.length > 0 && (
+                {stopwords.length > 0 && !generating && (
                   <div className="flex flex-wrap gap-1.5 mt-3 p-3 bg-card rounded-2xl">
                     <span className="text-xs text-muted-foreground mr-2">高频词：</span>
                     {stopwords.map(({ word, count }) => (
@@ -353,6 +428,29 @@ export function ContentEditor({ project }: { project: Project }) {
             )}
           </div>
         </AppScrollArea>
+
+        {/* Quality panel (collapsible right sidebar) */}
+        {showQualityPanel && !showAftercarePanel && (
+          <div className="w-72 shrink-0 border-l border-border">
+            <ChapterQualityPanel
+              projectId={project.id}
+              chapterId={selectedChapterId}
+              hasContent={text.trim().length > 0}
+              onContentRepaired={(repairedText) => setText(repairedText)}
+            />
+          </div>
+        )}
+
+        {/* Aftercare panel (collapsible right sidebar) */}
+        {showAftercarePanel && (
+          <div className="w-72 shrink-0 border-l border-border">
+            <AftercarePanel
+              project={project}
+              chapterId={selectedChapterId}
+              hasContent={text.trim().length > 0}
+            />
+          </div>
+        )}
       </div>
     </WorkspacePageLayout>
     <GenerateConfirmDialog
@@ -360,6 +458,63 @@ export function ContentEditor({ project }: { project: Project }) {
       onOpenChange={setShowGenerateConfirm}
       onConfirm={startGenerate}
     />
+
+    <Dialog open={showBatchGenerateDialog} onOpenChange={setShowBatchGenerateDialog}>
+      <DialogContent className="sm:max-w-[640px]">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Zap className="h-4 w-4" />
+            批量生成正文
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="max-h-[360px] overflow-y-auto">
+          <div className="space-y-2">
+            {chapters.map((chapter) => (
+              <div
+                key={chapter.id}
+                className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                  selectedChapterIds.includes(chapter.id)
+                    ? "bg-primary/10 border-primary"
+                    : "border-border hover:bg-accent"
+                }`}
+                onClick={() => toggleChapterSelection(chapter.id)}
+              >
+                <div className={`w-5 h-5 rounded border flex items-center justify-center ${
+                  selectedChapterIds.includes(chapter.id)
+                    ? "bg-primary border-primary text-primary-foreground"
+                    : "border-border"
+                }`}>
+                  {selectedChapterIds.includes(chapter.id) && <CheckCircle2 className="h-3.5 w-3.5" />}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium truncate">
+                    第{chapter.chapter_number}章 {chapter.title || "未命名"}
+                  </p>
+                  {chapter.summary && (
+                    <p className="text-xs text-muted-foreground line-clamp-1">
+                      {chapter.summary}
+                    </p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setShowBatchGenerateDialog(false)}>
+            取消
+          </Button>
+          <Button
+            onClick={handleBatchGenerate}
+            disabled={batchGenerating || selectedChapterIds.length === 0}
+          >
+            {batchGenerating ? "生成中..." : `生成 ${selectedChapterIds.length} 章`}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
     </>
   );
 }

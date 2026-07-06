@@ -127,9 +127,214 @@ CREATE TABLE IF NOT EXISTS generation_logs (
 );
 ";
 
+const MIGRATION_003: &str = "
+CREATE TABLE IF NOT EXISTS project_profiles (
+  project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  premise TEXT DEFAULT '',
+  genre TEXT DEFAULT '',
+  target_audience TEXT DEFAULT '',
+  selling_point TEXT DEFAULT '',
+  reader_promise TEXT DEFAULT '',
+  narrative_pov TEXT DEFAULT 'third_person',
+  pace_preference TEXT DEFAULT 'balanced',
+  default_chapter_length INTEGER DEFAULT 3000,
+  estimated_chapter_count INTEGER DEFAULT 30,
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+";
+
+const MIGRATION_004: &str = "
+CREATE TABLE IF NOT EXISTS chapter_reviews (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+  overall_score INTEGER DEFAULT 0,
+  continuity_score INTEGER DEFAULT 0,
+  character_score INTEGER DEFAULT 0,
+  pacing_score INTEGER DEFAULT 0,
+  issues_json TEXT DEFAULT '[]',
+  suggestions TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_chapter_reviews_chapter
+ON chapter_reviews(project_id, chapter_id, created_at);
+";
+
+/// Check if a column exists in a table
+fn column_exists(conn: &Connection, table: &str, column: &str) -> SqlResult<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table))?;
+    let rows = stmt.query_map([], |row| {
+        let name: String = row.get(1)?;
+        Ok(name)
+    })?;
+    for row in rows {
+        if row? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Safely add a column to a table if it doesn't already exist
+fn add_column_if_missing(conn: &Connection, table: &str, column: &str, def: &str) -> SqlResult<()> {
+    if !column_exists(conn, table, column)? {
+        conn.execute_batch(&format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, def))?;
+    }
+    Ok(())
+}
+
+/// Migrate chapters table: add task sheet fields
+fn migrate_chapters_v04(conn: &Connection) -> SqlResult<()> {
+    add_column_if_missing(conn, "chapters", "goal", "TEXT DEFAULT ''")?;
+    add_column_if_missing(conn, "chapters", "conflict_level", "INTEGER DEFAULT 3")?;
+    add_column_if_missing(conn, "chapters", "hook", "TEXT DEFAULT ''")?;
+    add_column_if_missing(conn, "chapters", "payoff", "TEXT DEFAULT ''")?;
+    add_column_if_missing(conn, "chapters", "must_avoid", "TEXT DEFAULT ''")?;
+    add_column_if_missing(conn, "chapters", "target_word_count", "INTEGER DEFAULT 3000")?;
+    Ok(())
+}
+
+const MIGRATION_005: &str = "
+CREATE TABLE IF NOT EXISTS world_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  item_type TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  rules TEXT DEFAULT '',
+  sort_order INTEGER DEFAULT 0,
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS character_relations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  source_character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+  target_character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+  relation_type TEXT DEFAULT '',
+  tension TEXT DEFAULT '',
+  summary TEXT DEFAULT '',
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS character_states (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+  chapter_id INTEGER,
+  state_summary TEXT DEFAULT '',
+  goal TEXT DEFAULT '',
+  emotion TEXT DEFAULT '',
+  location TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS story_facts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  chapter_id INTEGER,
+  fact_type TEXT NOT NULL,
+  content TEXT NOT NULL,
+  confidence REAL DEFAULT 1.0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS foreshadows (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  setup_chapter_id INTEGER,
+  payoff_chapter_id INTEGER,
+  content TEXT NOT NULL,
+  status TEXT DEFAULT 'setup',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_world_items_project
+ON world_items(project_id, sort_order);
+
+CREATE INDEX IF NOT EXISTS idx_character_relations_project
+ON character_relations(project_id);
+
+CREATE INDEX IF NOT EXISTS idx_character_states_character
+ON character_states(project_id, character_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_story_facts_project
+ON story_facts(project_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_foreshadows_project
+ON foreshadows(project_id, status);
+";
+
+const MIGRATION_006: &str = "
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks USING fts5(
+  project_id UNINDEXED,
+  source_id UNINDEXED,
+  title,
+  content,
+  source_type UNINDEXED
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_sources (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  source_type TEXT NOT NULL,
+  raw_content TEXT DEFAULT '',
+  chunk_count INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_sources_project
+ON knowledge_sources(project_id, created_at);
+";
+
+const MIGRATION_007: &str = "
+CREATE TABLE IF NOT EXISTS style_rules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  rule_type TEXT NOT NULL,
+  content TEXT NOT NULL,
+  enabled INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS model_routes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_type TEXT NOT NULL UNIQUE,
+  primary_preset_id INTEGER REFERENCES model_presets(id) ON DELETE SET NULL,
+  fallback_preset_id INTEGER REFERENCES model_presets(id) ON DELETE SET NULL,
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  job_type TEXT NOT NULL,
+  status TEXT NOT NULL,
+  payload_json TEXT DEFAULT '{}',
+  result_json TEXT DEFAULT '{}',
+  error TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_style_rules_project
+ON style_rules(project_id, enabled);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_project
+ON jobs(project_id, created_at);
+";
+
 /// Run all migrations on the database
 pub fn run(conn: &Connection) -> SqlResult<()> {
     conn.execute_batch(MIGRATION_001)?;
     conn.execute_batch(MIGRATION_002)?;
+    conn.execute_batch(MIGRATION_003)?;
+    conn.execute_batch(MIGRATION_004)?;
+    migrate_chapters_v04(conn)?;
+    conn.execute_batch(MIGRATION_005)?;
+    conn.execute_batch(MIGRATION_006)?;
+    conn.execute_batch(MIGRATION_007)?;
     Ok(())
 }

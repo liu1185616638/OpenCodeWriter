@@ -30,8 +30,16 @@ export function ChapterEditor({ project }: { project: Project }) {
   const { currentPreset, currentPresetId, switchPreset, presets } = useSettings();
   const { generating, streamedContent, thinkingContent, generatingStage, error, generate, cancel } = useAI();
   const [selectedId, setSelectedId] = useState<number | null>(null);
+
+  // Task sheet fields
   const [editTitle, setEditTitle] = useState("");
   const [editSummary, setEditSummary] = useState("");
+  const [editGoal, setEditGoal] = useState("");
+  const [editConflictLevel, setEditConflictLevel] = useState(3);
+  const [editHook, setEditHook] = useState("");
+  const [editPayoff, setEditPayoff] = useState("");
+  const [editMustAvoid, setEditMustAvoid] = useState("");
+  const [editTargetWordCount, setEditTargetWordCount] = useState(3000);
 
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [newTitle, setNewTitle] = useState("");
@@ -63,12 +71,27 @@ export function ChapterEditor({ project }: { project: Project }) {
     if (selectedChapter) {
       setEditTitle(selectedChapter.title);
       setEditSummary(selectedChapter.summary);
+      setEditGoal(selectedChapter.goal);
+      setEditConflictLevel(selectedChapter.conflict_level);
+      setEditHook(selectedChapter.hook);
+      setEditPayoff(selectedChapter.payoff);
+      setEditMustAvoid(selectedChapter.must_avoid);
+      setEditTargetWordCount(selectedChapter.target_word_count);
     }
   }, [selectedChapter]);
 
   const handleSaveSelected = async () => {
     if (selectedId) {
-      await update(selectedId, editTitle, editSummary);
+      await update(selectedId, {
+        title: editTitle,
+        summary: editSummary,
+        goal: editGoal,
+        conflict_level: editConflictLevel,
+        hook: editHook,
+        payoff: editPayoff,
+        must_avoid: editMustAvoid,
+        target_word_count: editTargetWordCount,
+      });
     }
   };
 
@@ -252,7 +275,63 @@ export function ChapterEditor({ project }: { project: Project }) {
             ) : selectedChapter ? (
               <>
                 <Input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} placeholder="章节标题" className="text-base" />
-                <Textarea value={editSummary} onChange={(e) => setEditSummary(e.target.value)} placeholder="章节摘要" className="app-scrollbar min-h-[220px] resize-y overflow-y-auto bg-background border-border" />
+                <Textarea value={editSummary} onChange={(e) => setEditSummary(e.target.value)} placeholder="章节摘要" className="app-scrollbar min-h-[120px] resize-y overflow-y-auto bg-background border-border" />
+
+                {/* Task sheet fields */}
+                <div className="space-y-3 rounded-2xl border border-border p-4 bg-card/50">
+                  <h4 className="text-sm font-semibold text-muted-foreground">章节任务单</h4>
+
+                  <div>
+                    <label className="text-xs text-muted-foreground">本章目标</label>
+                    <Textarea value={editGoal} onChange={(e) => setEditGoal(e.target.value)} placeholder="本章要完成什么（如：主角发现关键线索，推动主线前进）" className="app-scrollbar min-h-[60px] resize-y text-sm" />
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-muted-foreground">冲突等级（1=舒缓过渡，5=高潮转折）</label>
+                    <div className="flex items-center gap-2 mt-1">
+                      {[1, 2, 3, 4, 5].map(level => (
+                        <button
+                          key={level}
+                          onClick={() => setEditConflictLevel(level)}
+                          className={`w-8 h-8 rounded-full text-sm font-medium transition-colors ${
+                            editConflictLevel === level
+                              ? "bg-primary text-primary-foreground"
+                              : "bg-muted text-muted-foreground hover:bg-muted/80"
+                          }`}
+                        >
+                          {level}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-muted-foreground">开篇钩子</label>
+                    <Input value={editHook} onChange={(e) => setEditHook(e.target.value)} placeholder="用什么抓住读者注意力（如：以悬念开场）" className="text-sm" />
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-muted-foreground">收束回报</label>
+                    <Input value={editPayoff} onChange={(e) => setEditPayoff(e.target.value)} placeholder="本章结尾给读者什么满足感（如：揭示部分真相）" className="text-sm" />
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-muted-foreground">禁止事项</label>
+                    <Textarea value={editMustAvoid} onChange={(e) => setEditMustAvoid(e.target.value)} placeholder="本章写作中必须避免的内容（如：不要让配角抢戏）" className="app-scrollbar min-h-[60px] resize-y text-sm" />
+                  </div>
+
+                  <div>
+                    <label className="text-xs text-muted-foreground">目标字数</label>
+                    <Input
+                      type="number"
+                      value={editTargetWordCount}
+                      onChange={(e) => setEditTargetWordCount(parseInt(e.target.value) || 0)}
+                      min={0}
+                      className="text-sm w-32"
+                    />
+                  </div>
+                </div>
+
                 <div className="flex flex-wrap gap-2">
                   <Button size="sm" onClick={handleSaveSelected} className="rounded-full">保存</Button>
                   <Button size="sm" variant="destructive" className="rounded-full" onClick={() => { if (selectedId) remove(selectedId); setSelectedId(null); }}>

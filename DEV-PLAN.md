@@ -1,580 +1,579 @@
 # DEV-PLAN — OpenCodeWriter
 
-## 技术选型证据
+本文是当前仓库后续实现的开发计划。计划基于以下事实源更新：
 
-| 选型 | 版本/方案 | 证据 |
+- `Product-Spec.md`
+- `Design-Brief.md`
+- `docs/superpowers/plans/2026-06-23-ui-redesign-tauri-react.md`
+- `docs/ArchitectsReply/2026-06-29-p0-step-by-step-development-plan.md`
+- `docs/ArchitectsReply/2026-07-05-compare-ai-novel-writing-assistant-optimization.md`
+- 当前代码结构、`package.json`、`src-tauri/Cargo.toml`
+
+## 当前技术选型证据
+
+| 层级 | 当前方案 | 证据 |
 |------|----------|------|
-| 运行时 | bun >= 1.3.0 | OpenTUI `@opentui/core` 的 engines 要求 |
-| UI 框架 | `@opentui/core` 0.4.x | 提供 Box/Text/Input/Textarea/Select/ScrollBox/TabSelect/EditBuffer 等组件，原生 Zig 渲染，支持 themeMode 暗色/亮色切换 |
-| 语言 | TypeScript 5.x | OpenTUI 提供 TypeScript 类型定义 |
-| 数据库 | bun:sqlite | bun 内置 SQLite 绑定，同步 API，better-sqlite3 在 bun 1.3 下不兼容（ERR_DLOPEN_FAILED），改用 bun:sqlite |
-| AI 调用 | OpenAI SDK (`openai`) npm 包 | 官方维护，支持 OpenAI 兼容 API（baseURL 可配置），streaming 支持 |
-| 构建 | bun 原生 TypeScript 执行 | 无需编译步骤，`bun src/index.ts` 直接运行 |
-| 测试 | bun:test | bun 内置测试框架，零配置 |
+| 桌面壳 | Tauri 2 | `src-tauri/tauri.conf.json`、`@tauri-apps/api`、`@tauri-apps/cli` |
+| 前端 | React 19 + Vite 7 + TypeScript | `package.json`、`src/main.tsx`、`src/App.tsx` |
+| UI 组件 | Radix/shadcn 风格组件 + TailwindCSS 4 + lucide-react | `src/components/ui/**`、`src/styles/globals.css`、`components.json` |
+| 后端命令层 | Rust Tauri commands | `src-tauri/src/commands/**` |
+| 数据库 | SQLite via `rusqlite` bundled | `src-tauri/Cargo.toml`、`src-tauri/src/db/migrations.rs` |
+| AI 调用 | Rust `reqwest` + streaming event | `src-tauri/src/ai/client.rs`、`src-tauri/src/commands/ai.rs` |
+| 本地资源 | 前后端各自嵌入/读取 methodology、templates、examples、stopwords | `src/resources/**`、`src-tauri/resources/**` |
+| 构建命令 | `pnpm build`、`pnpm tauri dev`、`pnpm tauri build` | `package.json`、`tauri.conf.json` |
 
-## 架构边界
+> 说明：旧计划中 OpenTUI + bun 的描述已经不符合当前仓库。后续实现以当前 React + Tauri 代码为准。
 
-```
+## 当前架构边界
+
+```text
 src/
-├─ main.ts                  # 入口：初始化 Renderer、数据库、路由
-├─ db/
-│   ├─ index.ts             # SQLite 连接、迁移
-│   ├─ models.ts            # 表结构定义（projects, outlines, characters, chapters, contents, settings, model_presets, skills）
-│   └─ migrations/          # SQL 迁移文件
-├─ ai/
-│   ├─ client.ts            # OpenAI 兼容客户端封装（支持多预设切换、streaming）
-│   ├─ context-builder.ts   # 文档驱动上下文组装（按阶段注入方法论/模板/示例/上游文档）
-│   └─ prompts/             # 各阶段 prompt 模板
-├─ resources/               # 内置创作资源
-│   ├─ methodology.md       # 创作方法论
-│   ├─ templates/           # 各阶段模板
-│   │   ├─ outline.md
-│   │   ├─ characters.md
-│   │   ├─ chapters.md
-│   │   └─ content.md
-│   ├─ examples/            # 各阶段示例
-│   │   ├─ outline.md
-│   │   ├─ characters.md
-│   │   └─ chapters.md
-│   └─ stopwords.json       # AI 味高频词库
-├─ skills/                  # Skill 系统
-│   ├─ loader.ts            # 扫描并加载 Skill 定义
-│   ├─ executor.ts          # 执行 Skill
-│   └─ builtin/             # 内置 Skill 定义文件
-│       └─ polish.skill.md  # 润色 Skill（可卸载）
-├─ services/
-│   ├─ project-service.ts   # 项目 CRUD
-│   ├─ outline-service.ts   # 大纲读写 + 过时标记
-│   ├─ character-service.ts # 人物读写 + 层级管理
-│   ├─ chapter-service.ts   # 章节目录读写
-│   ├─ content-service.ts   # 正文读写
-│   ├─ settings-service.ts  # 设置/模型预设/风格配置
-│   └─ stale-tracker.ts     # 过时标记级联计算
-├─ ui/
-│   ├─ app.ts               # 顶层布局：左右分屏
-│   ├─ theme.ts             # 暗色/亮色主题令牌定义
-│   ├─ components/          # 可复用 UI 组件
-│   │   ├─ panel.ts         # 面板容器
-│   │   ├─ status-bar.ts    # 状态栏
-│   │   ├─ action-bar.ts    # 操作栏（AI生成/模型选择/保存）
-│   │   ├─ alert-bar.ts     # 提示条（过时/错误）
-│   │   ├─ confirm-modal.ts # 确认模态框
-│   │   └─ progress.ts      # 进度显示
-│   ├─ views/
-│   │   ├─ setup-wizard.ts  # V1 配置向导
-│   │   ├─ project-list.ts  # V2 项目列表
-│   │   ├─ workspace.ts     # V3 项目工作区（含左面板）
-│   │   ├─ outline-editor.ts    # V3a 大纲编辑
-│   │   ├─ character-editor.ts  # V3b 人物编辑
-│   │   ├─ chapter-editor.ts    # V3c 章节目录
-│   │   ├─ content-editor.ts    # V3d 正文编辑
-│   │   └─ settings.ts          # V4 设置
-│   └─ keybindings.ts       # 全局快捷键注册
-└─ lib/
-    ├─ stopwatch.ts         # 高频词扫描与标记
-    └─ style-reference.ts   # 风格参考文本截断处理
+├─ App.tsx                         # 前端路由、工作区状态、阶段切换
+├─ main.tsx                        # React 入口
+├─ views/                          # 项目列表、设置、四个创作阶段页面
+├─ components/
+│  ├─ ai/                          # 生成确认、状态、恢复
+│  ├─ editor/                      # 工作区布局、操作栏、快照、模型选择
+│  ├─ flow/                        # 流程引导
+│  ├─ layout/                      # 标题栏、侧栏
+│  ├─ shared/                      # 通用滚动、过时提示、流式显示
+│  └─ ui/                          # 基础 UI 组件
+├─ contexts/AIContext.tsx          # AI 流式状态和生成控制
+├─ hooks/                          # 业务 hooks
+├─ lib/tauri.ts                    # Tauri invoke/listen 封装
+├─ lib/stageProgress.ts            # 阶段进度与下一步提示
+└─ types/                          # 前端类型
+
+src-tauri/src/
+├─ commands/                       # Tauri 命令：项目、大纲、人物、章节、正文等
+├─ ai/                             # AI client、上下文构建、事件发送
+├─ db/                             # SQLite 连接和迁移
+├─ resources/                      # 内置资源读取
+├─ models.rs                       # Rust 数据模型
+└─ lib.rs                          # Tauri plugin 入口和命令注册
 ```
 
-### 数据库表结构
+## 已有能力基线
 
-```sql
--- 模型预设
-CREATE TABLE model_presets (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL,
-  api_base TEXT NOT NULL,
-  api_key TEXT NOT NULL,
-  model_name TEXT NOT NULL,
-  created_at TEXT DEFAULT (datetime('now'))
-);
+当前仓库已经具备这些基础能力，后续计划不重复从零实现：
 
--- 项目
-CREATE TABLE projects (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL UNIQUE,
-  current_stage TEXT DEFAULT 'outline',
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now'))
-);
+- 项目创建、切换、删除。
+- 大纲、人物、章节目录、正文四阶段工作区。
+- AI 流式生成、取消、错误展示。
+- 模型预设配置和模型列表获取。
+- 写作风格配置、参考文本、自定义高频词。
+- 过时标记、过时原因查询入口。
+- 自动保存、内容快照、生成日志表。
+- 工作区通用布局、底部操作栏、模型选择、快照面板。
+- Tauri + SQLite 本地桌面应用基础。
 
--- 大纲
-CREATE TABLE outlines (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  content TEXT DEFAULT '',
-  status TEXT DEFAULT 'empty',  -- empty/draft/completed
-  updated_at TEXT DEFAULT (datetime('now'))
-);
+## 后续开发原则
 
--- 人物
-CREATE TABLE characters (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  tier TEXT NOT NULL,           -- main/supporting/minor
-  identity TEXT DEFAULT '',
-  appearance TEXT DEFAULT '',
-  personality TEXT DEFAULT '',
-  motivation TEXT DEFAULT '',
-  relationships TEXT DEFAULT '',
-  key_events TEXT DEFAULT '',
-  sort_order INTEGER DEFAULT 0,
-  updated_at TEXT DEFAULT (datetime('now'))
-);
-
--- 章节目录
-CREATE TABLE chapters (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  chapter_number INTEGER NOT NULL,
-  title TEXT DEFAULT '',
-  summary TEXT DEFAULT '',
-  sort_order INTEGER DEFAULT 0,
-  updated_at TEXT DEFAULT (datetime('now'))
-);
-
--- 正文
-CREATE TABLE contents (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
-  content TEXT DEFAULT '',
-  stale INTEGER DEFAULT 0,      -- 0=正常, 1=过时
-  updated_at TEXT DEFAULT (datetime('now'))
-);
-
--- 过时标记
-CREATE TABLE stale_markers (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  target_type TEXT NOT NULL,     -- characters/chapters/contents
-  target_id INTEGER,             -- NULL 表示整个类型全部过时
-  source_type TEXT NOT NULL,     -- outline/characters/chapters
-  created_at TEXT DEFAULT (datetime('now'))
-);
-
--- 写作风格配置（每项目）
-CREATE TABLE style_configs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE UNIQUE,
-  reference_text TEXT DEFAULT '',
-  narrative_voice TEXT DEFAULT 'third_person',
-  formality TEXT DEFAULT 'moderate',
-  emotion_intensity TEXT DEFAULT 'moderate',
-  custom_stopwords TEXT DEFAULT '[]',  -- JSON 数组
-  updated_at TEXT DEFAULT (datetime('now'))
-);
-
--- 全局设置
-CREATE TABLE settings (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-```
+1. 先完成 `v0.2` 体验地基验收，再扩展长篇创作能力。
+2. 每个版本必须能编译、运行，并从用户入口看到结果。
+3. 新表通过 `src-tauri/src/db/migrations.rs` 增量迁移，不破坏旧数据。
+4. 新 AI 能力必须先在后端命令层定义清楚输入输出，再接前端。
+5. 不直接引入 Qdrant、LangGraph、大型 Agent Runtime；优先使用 SQLite 和现有 Tauri 架构做轻量实现。
+6. 不做漫画、短剧、复杂生产系统；OpenCodeWriter 保持本地桌面长篇小说写作工具定位。
 
 ## 阶段依赖
 
-```
-Phase 0: 项目脚手架
+```text
+Phase 0: v0.2 体验地基验收与补齐
   ↓
-Phase 1: 数据层 + AI 客户端
+Phase 1: v0.3 开书定盘
   ↓
-Phase 2: 基础 UI 框架 + 配置向导
+Phase 2: v0.4 章节执行闭环
   ↓
-Phase 3: 项目管理 + 大纲编辑
+Phase 3: v0.5 世界与角色资产
   ↓
-Phase 4: 人物编辑
+Phase 4: v0.6 轻量知识库
   ↓
-Phase 5: 章节目录 + 正文编辑
-  ↓
-Phase 6: 过时标记系统
-  ↓
-Phase 7: 写作风格 + 去 AI 味机制
-  ↓
-Phase 8: Skills 系统
-  ↓
-Phase 9: 设置 + 主题切换 + 打磨
+Phase 5: v0.7 写法引擎、模型路由与任务中心
 ```
 
-## Phase 0：项目脚手架
+---
 
-**目标**：可运行的空项目，验证 OpenTUI + bun + SQLite 集成。
+## Phase 0：v0.2 体验地基验收与补齐
+
+**目标**：确认当前基础功能真的适合长时间使用。只补齐体验地基缺口，不扩展新业务模块。
 
 ### 任务
 
-| ID | 任务 | 涉及文件 | 完成标准 |
-|----|------|---------|---------|
-| 0.1 | 初始化 bun 项目，安装依赖 | `package.json`, `bun.lock` | `bun install` 无错误 |
-| 0.2 | 创建入口文件，初始化 OpenTUI Renderer 显示空白窗口 | `src/main.ts` | `bun run src/main.ts` 启动 TUI 界面 |
-| 0.3 | 验证 better-sqlite3 在 bun 下可运行 | `src/db/index.ts` | 创建内存 SQLite 连接，建表查询无错误 |
-| 0.4 | 创建项目目录结构（所有空文件占位） | `src/**` | 目录结构完整，TypeScript 无导入错误 |
-
-### 依赖
-
-```json
-{
-  "@opentui/core": "^0.4.0",
-  "openai": "^4.0.0"
-}
-```
-
-> 注：better-sqlite3 在 bun 下不兼容，改用 `bun:sqlite`（bun 内置，无需安装）。
+| ID | 任务 | 涉及文件 | 完成标准 | 状态 |
+|----|------|----------|----------|------|
+| 0.1 | 核验四阶段页面是否统一使用工作区布局、滚动容器、操作栏 | `src/views/*.tsx`、`src/components/editor/**`、`src/components/shared/**` | 大纲、人物、目录、正文在小窗口下不遮挡、不横向溢出 | [~] 待人工验证 |
+| 0.2 | 核验 AI 生成确认、生成状态、失败恢复、取消后保留内容 | `src/contexts/AIContext.tsx`、`src/components/ai/**`、各 editor | 有内容时生成不会直接覆盖；失败可重试或复制错误 | [~] 待人工验证 |
+| 0.3 | 核验自动保存和快照恢复 | `src/hooks/useAutosave.ts`、`src/components/editor/SnapshotPanel.tsx`、`src-tauri/src/commands/snapshots.rs` | 大纲和正文自动保存；AI 生成/润色前可恢复快照 | [~] 待人工验证 |
+| 0.4 | 核验下一步引导和过时原因 | `src/components/flow/FlowGuide.tsx`、`src/components/shared/StaleAlert.tsx`、`src-tauri/src/commands/stale.rs` | 每阶段能看到下一步；过时提示说明来源 | [~] 待人工验证 |
+| 0.5 | 将生成日志 UI 化为基础历史面板 | `src-tauri/src/db/migrations.rs`、`src-tauri/src/commands/generation_logs.rs`、`src/components/ai/GenerationHistoryPanel.tsx` | 可查看最近生成的阶段、模型、状态、错误、输入/输出字数 | [x] 已实现 |
+| 0.6 | 做一次端到端回归 | 全部 | 配置模型→创建项目→大纲→人物→章节→正文→润色/快照→重启后数据存在 | [ ] 未开始 |
 
 ### 验证命令
 
 ```bash
-bun install
-bun run src/main.ts    # 启动 TUI 空白窗口
-bun test               # 空测试套件通过
+pnpm build
+cd src-tauri && cargo check
+pnpm tauri dev
 ```
 
 ### 门禁
 
-- [x] 编译/启动无错误
-- [x] TUI 空白窗口可见
-- [x] SQLite 连接测试通过（bun:sqlite 替代 better-sqlite3）
-- [ ] 两阶段代码审查通过
+- [ ] 四阶段布局和滚动体验通过人工验证。
+- [ ] AI 生成可控化通过人工验证。
+- [ ] 自动保存、快照、恢复通过人工验证。
+- [ ] 下一步引导、过时原因通过人工验证。
+- [x] `pnpm build` 通过。
+- [x] `cargo check` 通过。
+- [ ] 两阶段代码审查通过。
+- [ ] `pnpm tauri dev` 端到端回归验证。
 
 ---
 
-## Phase 1：数据层 + AI 客户端
+## Phase 1：v0.3 开书定盘
 
-**目标**：数据库迁移完整，所有 service 层可 CRUD，AI 客户端可调通 OpenAI 兼容 API。
+**目标**：从“一上来写大纲”升级为“一句话灵感 -> 多方向候选 -> 项目设定 -> 初始大纲”。
+
+### 数据迁移
+
+新增 `project_profiles`：
+
+```sql
+CREATE TABLE IF NOT EXISTS project_profiles (
+  project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  premise TEXT DEFAULT '',
+  genre TEXT DEFAULT '',
+  target_audience TEXT DEFAULT '',
+  selling_point TEXT DEFAULT '',
+  reader_promise TEXT DEFAULT '',
+  narrative_pov TEXT DEFAULT 'third_person',
+  pace_preference TEXT DEFAULT 'balanced',
+  default_chapter_length INTEGER DEFAULT 3000,
+  estimated_chapter_count INTEGER DEFAULT 30,
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+```
 
 ### 任务
 
-| ID | 任务 | 涉及文件 | 完成标准 |
-|----|------|---------|---------|
-| 1.1 | 编写数据库迁移（全部建表 SQL） | `src/db/migrations/001_init.sql`, `src/db/index.ts` | 迁移执行后所有表存在 |
-| 1.2 | 实现 project-service（创建/列表/删除/切换） | `src/services/project-service.ts` | 单元测试覆盖 CRUD |
-| 1.3 | 实现 outline-service（读取/保存/状态更新） | `src/services/outline-service.ts` | 单元测试通过 |
-| 1.4 | 实现 character-service（CRUD + tier 层级） | `src/services/character-service.ts` | 单元测试通过 |
-| 1.5 | 实现 chapter-service（CRUD + 排序） | `src/services/chapter-service.ts` | 单元测试通过 |
-| 1.6 | 实现 content-service（CRUD + stale 字段） | `src/services/content-service.ts` | 单元测试通过 |
-| 1.7 | 实现 settings-service（key-value + 模型预设 CRUD） | `src/services/settings-service.ts` | 单元测试通过 |
-| 1.8 | 实现 AI 客户端封装（支持多预设、baseURL 配置、streaming） | `src/ai/client.ts` | 可用测试 API Key 调通，流式返回可读 |
-| 1.9 | 实现 context-builder（按阶段组装上下文字符串） | `src/ai/context-builder.ts` | 单元测试：验证各阶段注入了正确的上下文组件 |
+| ID | 任务 | 涉及文件 | 完成标准 | 状态 |
+|----|------|----------|----------|------|
+| 1.1 | 增加 `project_profiles` 迁移、Rust model、Tauri command | `src-tauri/src/db/migrations.rs`、`models.rs`、`commands/profiles.rs` | 可创建、读取、保存项目设定 | [x] 已实现 |
+| 1.2 | 前端类型和 invoke 封装 | `src/types/index.ts`、`src/lib/tauri.ts` | TypeScript 类型与 Rust 返回一致 | [x] 已实现 |
+| 1.3 | 新增项目设定页或设置分区 | `src/views/ProjectProfileView.tsx` | 可编辑题材、卖点、目标读者、前 30 章承诺等字段 | [x] 已实现 |
+| 1.4 | 新增 `IdeaToProjectWizard` | `src/views/IdeaToProjectWizard.tsx`、`src/views/ProjectList.tsx` | 用户输入一句灵感后可生成 3 个方向候选 | [x] 已实现 |
+| 1.5 | 新增 AI 命令：生成方向候选、根据候选创建初始大纲 | `src-tauri/src/commands/ai.rs`、`src-tauri/src/ai/context.rs` | 每个候选包含标题、题材、卖点、目标读者、核心冲突、前 30 章承诺 | [x] 已实现 |
+| 1.6 | 将项目设定注入大纲、人物、章节、正文上下文 | `src-tauri/src/ai/context.rs` | AI 请求上下文包含 `project_profiles` 字段 | [x] 已实现 |
+| 1.7 | 保存候选选择后自动创建项目、写入设定、生成初始大纲 | `IdeaToProjectWizard.tsx`、`profiles.rs`、`ai.rs` | 新项目进入大纲阶段时已有设定和草稿大纲 | [x] 已实现 |
 
 ### 验证命令
 
 ```bash
-bun test               # 所有 service + AI 客户端测试通过
+pnpm build
+cd src-tauri && cargo check
+pnpm tauri dev
 ```
+
+### 功能验证
+
+1. 从项目列表点击“一句话开书”。
+2. 输入一句灵感。
+3. AI 返回 3 个方向候选。
+4. 选择一个方向。
+5. 自动创建项目、写入项目设定、生成初始大纲。
+6. 大纲/人物/章节/正文生成上下文包含项目设定。
 
 ### 门禁
 
-- [x] 所有 service 单元测试通过（39 tests, 81 assertions）
-- [ ] AI 客户端 streaming 调用实测通过（需真实 API Key，Phase 2 配置向导后验证）
-- [x] context-builder 各阶段注入逻辑验证
-- [ ] 两阶段代码审查通过
+- [ ] 项目设定 CRUD 可用。
+- [ ] 一句话开书可完整走通。
+- [ ] 未配置模型时有明确提示，不创建半成品项目。
+- [ ] 新增上下文不破坏旧四阶段生成。
+- [x] `pnpm build` 通过。
+- [x] `cargo check` 通过。
+- [ ] 两阶段代码审查通过。
+- [ ] `pnpm tauri dev` 功能验证。
 
 ---
 
-## Phase 2：基础 UI 框架 + 配置向导
+## Phase 2：v0.4 章节执行闭环
 
-**目标**：左右分屏布局可见，主题令牌生效，配置向导可完成首次配置。
+**目标**：从“生成正文”升级为“章节任务单 -> 正文生成 -> AI 审核 -> 修复 -> 快照恢复”。
+
+### 数据迁移
+
+增强 `chapters`：
+
+```sql
+ALTER TABLE chapters ADD COLUMN goal TEXT DEFAULT '';
+ALTER TABLE chapters ADD COLUMN conflict_level INTEGER DEFAULT 3;
+ALTER TABLE chapters ADD COLUMN hook TEXT DEFAULT '';
+ALTER TABLE chapters ADD COLUMN payoff TEXT DEFAULT '';
+ALTER TABLE chapters ADD COLUMN must_avoid TEXT DEFAULT '';
+ALTER TABLE chapters ADD COLUMN target_word_count INTEGER DEFAULT 3000;
+```
+
+新增 `chapter_reviews`：
+
+```sql
+CREATE TABLE IF NOT EXISTS chapter_reviews (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+  overall_score INTEGER DEFAULT 0,
+  continuity_score INTEGER DEFAULT 0,
+  character_score INTEGER DEFAULT 0,
+  pacing_score INTEGER DEFAULT 0,
+  issues_json TEXT DEFAULT '[]',
+  suggestions TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+```
 
 ### 任务
 
-| ID | 任务 | 涉及文件 | 完成标准 |
-|----|------|---------|---------|
-| 2.1 | 定义暗色/亮色主题令牌 | `src/ui/theme.ts` | 两种主题的令牌值与 Design Brief 一致 |
-| 2.2 | 实现顶层 App 布局（左面板 25% + 右面板 75%） | `src/ui/app.ts` | 启动后可见左右分屏 |
-| 2.3 | 实现左面板基础结构（项目列表区 + 阶段导航区 + 底部状态栏） | `src/ui/app.ts` | 左面板三个区域可见 |
-| 2.4 | 实现配置向导视图（三步表单：API地址/Key/模型名 + 连接测试） | `src/ui/views/setup-wizard.ts` | 输入 API 信息后可测试连接 |
-| 2.5 | 实现路由逻辑：首次启动→配置向导→项目列表 | `src/main.ts` | 无配置时自动进入向导，完成后进入项目列表 |
-| 2.6 | 注册全局快捷键框架 | `src/ui/keybindings.ts` | Ctrl+T 可切换主题 |
+| ID | 任务 | 涉及文件 | 完成标准 | 状态 |
+|----|------|----------|----------|------|
+| 2.1 | 迁移章节任务单字段和审核表 | `src-tauri/src/db/migrations.rs`、`models.rs` | 旧章节数据可正常读取，新字段有默认值 | [x] 已实现 |
+| 2.2 | 扩展章节 CRUD | `src-tauri/src/commands/chapters.rs`、`src/hooks/useChapters.ts` | 可保存目标、冲突等级、钩子、伏笔、禁止事项、目标字数 | [x] 已实现 |
+| 2.3 | UI 从章节摘要升级为章节任务单 | `src/views/ChapterEditor.tsx`、`src/views/ContentEditor.tsx` | 选中章节可编辑完整任务单 | [x] 已实现 |
+| 2.4 | 正文生成上下文注入章节任务单 | `src-tauri/src/ai/context.rs` | prompt 包含本章目标、钩子、禁止事项、目标字数 | [x] 已实现 |
+| 2.5 | 新增 AI 审核命令 `review_chapter_content` | `src-tauri/src/commands/ai.rs`、`src-tauri/src/ai/context.rs` | 返回评分、问题列表和修复建议，并保存到 `chapter_reviews` | [x] 已实现 |
+| 2.6 | 新增 AI 修复命令 `repair_chapter_content` | 同上 | 修复前创建快照，修复后更新正文 | [x] 已实现 |
+| 2.7 | 新增 `ChapterQualityPanel` | `src/components/ai/ChapterQualityPanel.tsx` | 可查看最近审核、评分、问题、建议，并触发修复 | [x] 已实现 |
+| 2.8 | 生成历史面板支持审核/修复记录 | `src/components/ai/GenerationHistoryPanel.tsx` | 可区分 generate/review/repair/polish | [x] 已实现 |
 
 ### 验证命令
 
 ```bash
-bun run src/main.ts    # 启动后可见分屏布局
-# 首次启动进入配置向导
-# Ctrl+T 切换暗色/亮色主题
+pnpm build
+cd src-tauri && cargo check
+pnpm tauri dev
 ```
+
+### 功能验证
+
+1. 为章节填写任务单。
+2. 生成正文，确认内容遵守任务单。
+3. 点击“AI 审核本章”。
+4. 看到质量评分和问题列表。
+5. 点击“一键修复”，修复前快照可恢复。
 
 ### 门禁
 
-- [ ] 分屏布局正确渲染
-- [ ] 配置向导三步可完成，API 连接测试可用
-- [ ] 主题切换即时生效
-- [ ] 两阶段代码审查通过
+- [ ] 章节任务单可编辑、保存、重启后存在。
+- [ ] 正文生成使用任务单字段。
+- [ ] 审核报告可保存和查看。
+- [ ] 修复前有快照，失败不覆盖原文。
+- [x] `pnpm build` 通过。
+- [x] `cargo check` 通过。
+- [ ] 两阶段代码审查通过。
+- [ ] `pnpm tauri dev` 功能验证。
 
 ---
 
-## Phase 3：项目管理 + 大纲编辑
+## Phase 3：v0.5 世界与角色资产
 
-**目标**：可创建项目、进入大纲编辑区、AI 生成大纲并手动编辑。
+**目标**：从静态大纲/人物文本，升级为可持续回灌的世界、角色、事实、伏笔资产。
+
+### 数据迁移
+
+新增：
+
+```sql
+CREATE TABLE IF NOT EXISTS world_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  item_type TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  rules TEXT DEFAULT '',
+  sort_order INTEGER DEFAULT 0,
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS character_relations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  source_character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+  target_character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+  relation_type TEXT DEFAULT '',
+  tension TEXT DEFAULT '',
+  summary TEXT DEFAULT '',
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS character_states (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  character_id INTEGER NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+  chapter_id INTEGER,
+  state_summary TEXT DEFAULT '',
+  goal TEXT DEFAULT '',
+  emotion TEXT DEFAULT '',
+  location TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS story_facts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  chapter_id INTEGER,
+  fact_type TEXT NOT NULL,
+  content TEXT NOT NULL,
+  confidence REAL DEFAULT 1.0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS foreshadows (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  setup_chapter_id INTEGER,
+  payoff_chapter_id INTEGER,
+  content TEXT NOT NULL,
+  status TEXT DEFAULT 'setup',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+```
 
 ### 任务
 
 | ID | 任务 | 涉及文件 | 完成标准 |
-|----|------|---------|---------|
-| 3.1 | 实现项目列表视图（列表展示 + Ctrl+N 新建 + 删除确认） | `src/ui/views/project-list.ts` | 创建/删除项目可见 |
-| 3.2 | 实现左面板创作阶段导航（四阶段 + 状态图标） | `src/ui/app.ts` | 四阶段节点显示，点击大纲可切换 |
-| 3.3 | 实现大纲编辑视图（Textarea 编辑区 + 底部操作栏） | `src/ui/views/outline-editor.ts` | 可手动输入大纲文本 |
-| 3.4 | 实现操作栏组件（[AI生成] [模型▼] [保存]） | `src/ui/components/action-bar.ts` | 三个按钮可见可交互 |
-| 3.5 | 对接 AI 生成大纲：context-builder 注入方法论+模板+示例，调用 AI，流式输出到编辑区 | `src/ui/views/outline-editor.ts`, `src/ai/context-builder.ts` | 点击 AI 生成后大纲内容流式出现 |
-| 3.6 | 实现模型预设选择下拉 | `src/ui/components/action-bar.ts` | 可选择不同预设，生成时使用选中预设 |
-| 3.7 | 保存大纲到数据库 | `src/ui/views/outline-editor.ts` | Ctrl+S 保存，重启后内容仍在 |
+|----|------|----------|----------|
+| 3.1 | 新增世界观、关系、状态、事实、伏笔表和命令 | `src-tauri/src/db/migrations.rs`、`models.rs`、`commands/**` | 每类资产可 CRUD | [x] 已实现 |
+| 3.2 | 新增世界观视图 | `src/views`、`src/components/world` | 支持地点、势力、规则、历史、时间线、物件 | [x] 已实现 |
+| 3.3 | 人物页增加关系和状态入口 | `src/views/CharacterEditor.tsx`、`src/components/characters` | 可维护角色关系和最新状态 | [x] 已实现 |
+| 3.4 | 正文页增加事实/伏笔查看入口 | `src/views/ContentEditor.tsx`、`src/components/story` | 可查看并编辑故事事实、伏笔状态 | [x] 已实现 |
+| 3.5 | 新增 AI 命令 `chapter_aftercare` | `src-tauri/src/commands/ai.rs`、`src-tauri/src/ai/context.rs` | 从本章正文提取新增事实、人物状态、新人物候选、伏笔、下一章衔接 | [x] 已实现 |
+| 3.6 | 后护理结果需用户确认后写入资产 | 前端 aftercare UI、后端 commands | AI 结果不自动污染资产，用户可逐条接受/忽略 | [x] 已实现 |
+| 3.7 | 正文生成上下文注入世界、角色状态、事实、伏笔 | `src-tauri/src/ai/context.rs` | 当前章节生成能看到相关长期资产 | [x] 已实现 |
 
 ### 验证命令
 
 ```bash
-bun run src/main.ts
-# 1. 创建项目 → 进入大纲编辑
-# 2. 手动输入大纲 → Ctrl+S 保存 → 重启后内容存在
-# 3. 点击 [AI生成] → 大纲流式生成 → 可编辑
-# 4. 切换模型预设 → 重新生成
+pnpm build
+cd src-tauri && cargo check
+pnpm tauri dev
 ```
+
+### 功能验证
+
+1. 创建世界观条目。
+2. 创建角色关系和角色状态。
+3. 生成一章正文后执行 `chapter_aftercare`。
+4. 逐条确认事实、伏笔、角色状态变化。
+5. 下一章生成上下文包含这些资产。
 
 ### 门禁
 
-- [ ] 项目 CRUD 全流程可用
-- [ ] 大纲手动编辑+AI 生成均可工作
-- [ ] 保存持久化验证
-- [ ] 两阶段代码审查通过
+- [x] `pnpm build` 通过。
+- [x] `cargo check` 通过。
+- [x] 资产 CRUD 不影响旧四阶段。
+- [x] 后护理结果必须可审阅后写入。
+- [x] 伏笔支持 setup/payoff 状态。
+- [x] 生成上下文不会无限膨胀，按当前章节相关性筛选。
+- [ ] 两阶段代码审查通过。
+- [ ] `pnpm tauri dev` 功能验证。
 
 ---
 
-## Phase 4：人物编辑
+## Phase 4：v0.6 轻量知识库
 
-**目标**：基于大纲生成人物小传，三级层级折叠展示，可编辑单个人物卡片。
+**目标**：支持本地资料导入、拆分、全文检索，并在生成前召回相关资料。先做 SQLite FTS5，不引入向量数据库。
+
+### 数据迁移
+
+```sql
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks USING fts5(
+  project_id UNINDEXED,
+  title,
+  content,
+  source_type UNINDEXED,
+  source_id UNINDEXED
+);
+```
+
+如需管理来源，再新增普通表：
+
+```sql
+CREATE TABLE IF NOT EXISTS knowledge_sources (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  source_type TEXT NOT NULL,
+  raw_content TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+```
 
 ### 任务
 
 | ID | 任务 | 涉及文件 | 完成标准 |
-|----|------|---------|---------|
-| 4.1 | 实现人物编辑视图：三级折叠列表（主要角色/重要配角/其他角色） | `src/ui/views/character-editor.ts` | 三个层级可折叠展开 |
-| 4.2 | AI 生成人物：注入大纲+人物模板，AI 输出按层级解析 | `src/ui/views/character-editor.ts`, `src/ai/context-builder.ts` | 生成后三级列表有内容 |
-| 4.3 | 实现角色卡片展开编辑（姓名/身份/外貌/性格/动机/关系/事件） | `src/ui/views/character-editor.ts` | 展开角色可逐字段编辑 |
-| 4.4 | 人物新增/删除操作 | `src/ui/views/character-editor.ts` | 可手动添加/删除角色 |
-| 4.5 | 阶段准入控制：大纲未完成时人物阶段不可进入 | `src/ui/views/character-editor.ts` | 大纲空时点击人物被阻止并提示 |
+|----|------|----------|----------|
+| 4.1 | 新增知识库表和命令 | `src-tauri/src/db/migrations.rs`、`commands/knowledge.rs` | 可新增、删除、搜索资料 | [x] 已实现 |
+| 4.2 | 支持粘贴资料和导入 txt/md | 前端知识库视图、Tauri 文件能力 | 可将文本切 chunk 写入 FTS | [x] 已实现 |
+| 4.3 | 实现本地 chunk 切分 | `src-tauri/src/commands/knowledge.rs` 或前端工具 | 长文本按段落/长度切分，保留标题 | [x] 已实现 |
+| 4.4 | 新增知识库视图 | `src/views`、`src/components/knowledge` | 可查看来源、chunk、搜索结果 | [x] 已实现 |
+| 4.5 | 正文生成前按章节任务单和关键词检索相关 chunk | `src-tauri/src/ai/context.rs` | prompt 中包含有限数量的资料片段 | [x] 已实现 |
+| 4.6 | 简单拆书分析 | `src-tauri/src/commands/ai.rs` | 对资料生成结构化摘要，可保存为知识条目 | [x] 已实现 |
 
 ### 验证命令
 
 ```bash
-bun run src/main.ts
-# 1. 完成大纲后进入人物阶段
-# 2. AI 生成 → 三级列表出现
-# 3. 展开角色 → 编辑字段 → 保存
-# 4. 新增/删除角色
-# 5. 大纲为空时点击人物 → 被阻止
+pnpm build
+cd src-tauri && cargo check
+pnpm tauri dev
 ```
+
+### 功能验证
+
+1. 粘贴或导入一份资料。
+2. 搜索关键词能命中 chunk。
+3. 生成正文时能看到相关资料被注入。
+4. 删除资料后不再召回。
 
 ### 门禁
 
-- [ ] 三级层级展示正确
-- [ ] AI 生成基于大纲上下文
-- [ ] 阶段准入控制生效
-- [ ] 两阶段代码审查通过
+- [x] `pnpm build` 通过。
+- [x] `cargo check` 通过。
+- [x] 不引入外部向量数据库。
+- [x] 搜索结果数量受限，避免 prompt 过长。
+- [x] 用户能确认哪些资料被注入。
+- [ ] 两阶段代码审查通过。
+- [ ] `pnpm tauri dev` 功能验证。
 
 ---
 
-## Phase 5：章节目录 + 正文编辑
+## Phase 5：v0.7 写法引擎、模型路由与任务中心
 
-**目标**：可生成章节目录、逐章生成正文、手动编辑。
+**目标**：把风格参考、模型选择、生成历史升级为可复用的创作资产和可恢复任务入口。
+
+### 数据迁移
+
+```sql
+CREATE TABLE IF NOT EXISTS style_rules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  rule_type TEXT NOT NULL,
+  content TEXT NOT NULL,
+  enabled INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS model_routes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_type TEXT NOT NULL UNIQUE,
+  primary_preset_id INTEGER REFERENCES model_presets(id) ON DELETE SET NULL,
+  fallback_preset_id INTEGER REFERENCES model_presets(id) ON DELETE SET NULL,
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  job_type TEXT NOT NULL,
+  status TEXT NOT NULL,
+  payload_json TEXT DEFAULT '{}',
+  result_json TEXT DEFAULT '{}',
+  error TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+```
 
 ### 任务
 
 | ID | 任务 | 涉及文件 | 完成标准 |
-|----|------|---------|---------|
-| 5.1 | 实现章节目录视图（列表：序号+标题+摘要预览，可拖拽排序） | `src/ui/views/chapter-editor.ts` | 目录列表可见，可调整顺序 |
-| 5.2 | AI 生成章节目录：注入大纲+人物+目录模板 | `src/ai/context-builder.ts` | 生成后列表有章节 |
-| 5.3 | 手动增删章节、编辑标题和摘要 | `src/ui/views/chapter-editor.ts` | 可手动管理章节 |
-| 5.4 | 实现正文编辑视图（左侧章节列表 + 右侧正文 Textarea） | `src/ui/views/content-editor.ts` | 选中章节显示正文编辑区 |
-| 5.5 | AI 生成正文：注入大纲+人物+目录+风格+正文模板，流式输出 | `src/ai/context-builder.ts` | 点击生成后正文流式出现 |
-| 5.6 | 切换模型重新生成正文 | `src/ui/views/content-editor.ts` | 换模型后重新生成替换旧内容 |
-| 5.7 | 阶段准入控制：目录未完成时正文不可进入 | `src/ui/views/content-editor.ts` | 目录为空时点击正文被阻止 |
+|----|------|----------|----------|
+| 5.1 | 从参考文本提取写法规则 | `src-tauri/src/commands/ai.rs`、`src/views/Settings.tsx` | 用户可从样本文本生成规则并勾选启用 [x] 已实现 |
+| 5.2 | 生成、润色、审核上下文注入启用的写法规则 | `src-tauri/src/ai/context.rs` | prompt 包含规则池而不是只包含参考文本 [x] 已实现 |
+| 5.3 | 新增任务类型模型路由 | `src-tauri/src/commands/settings.rs` 或 `model_routes.rs`、设置页 | outline/characters/chapters/content/polish/review 可配置主模型和备用模型 [x] 已实现 |
+| 5.4 | AI 调用按任务类型选择模型，失败时提示备用模型重试 | `src-tauri/src/commands/ai.rs`、`src/contexts/AIContext.tsx` | 不破坏手动选择模型能力 [x] 已实现 |
+| 5.5 | 生成日志面板升级为轻量任务中心 | `generation_logs`、`jobs`、前端任务中心组件 | 可查看历史、错误、重试入口 [x] 已实现 |
+| 5.6 | 支持批量章节生成的最小可恢复任务 | `jobs`、`commands/ai.rs`、正文页 | 中断后可看到已完成章节和失败点 [x] 已实现 |
 
 ### 验证命令
 
 ```bash
-bun run src/main.ts
-# 1. 完成大纲+人物后生成章节目录
-# 2. 手动调整章节顺序/增删
-# 3. 选中章节 → AI 生成正文 → 流式显示
-# 4. 换模型重新生成
-# 5. 手动编辑正文 → 保存
+pnpm build
+cd src-tauri && cargo check
+pnpm tauri dev
 ```
 
 ### 门禁
 
-- [ ] 章节 CRUD + 排序可用
-- [ ] 正文逐章生成+流式显示
-- [ ] 模型切换重新生成
-- [ ] 阶段准入控制
-- [ ] 两阶段代码审查通过
+- [x] 写法规则可启用/禁用。
+- [x] 模型路由不覆盖用户临时手动选择。
+- [x] 任务中心只做轻量恢复，不引入复杂 Agent Runtime。
+- [x] 批量任务失败时不丢已生成章节。
+- [x] `pnpm build` 通过。
+- [x] `cargo check` 通过。
+- [ ] 两阶段代码审查通过。
+- [ ] `pnpm tauri dev` 功能验证。
 
 ---
 
-## Phase 6：过时标记系统
+## Product Spec 映射
 
-**目标**：上游修改后下游自动标记过时，用户可选择重新生成或标记为最新。
+| Product Spec | 当前/后续阶段 |
+|--------------|---------------|
+| F1 项目管理 | 已有；Phase 1 增加开书定盘创建项目 |
+| F2 大纲编写 | 已有；Phase 1 增加方向候选生成初始大纲 |
+| F3 人物小传 | 已有；Phase 3 增加关系和状态演变 |
+| F4 章节目录 | 已有；Phase 2 升级章节任务单 |
+| F5 正文生成 | 已有；Phase 2 增加审核修复闭环 |
+| F6 Skills 系统 | 保留现状；后续按实际缺口单独规划 |
+| F7 写作风格配置 | 已有；Phase 5 升级写法规则池 |
+| F8 文档驱动上下文 | 已有；Phase 1/2/3/4/5 持续扩展上下文源 |
+| F9 过时标记 | 已有；Phase 0 核验过时原因和引导 |
+| F10 AI 模型配置 | 已有；Phase 5 增加模型路由 |
+| F11 内置创作资源 | 已有；后续随写法和知识库扩展 |
+| F12 去 AI 味机制 | 已有基础；Phase 5 升级为写法引擎 |
 
-### 任务
+## 对标建议映射
 
-| ID | 任务 | 涉及文件 | 完成标准 |
-|----|------|---------|---------|
-| 6.1 | 实现 stale-tracker：大纲修改→标记人物/目录/正文，人物修改→标记目录/正文，目录修改→标记正文 | `src/services/stale-tracker.ts` | 单元测试验证级联规则 |
-| 6.2 | 在各编辑视图保存时触发 stale-tracker | 各 editor 文件 | 保存后下游状态变为 ⚠ |
-| 6.3 | 左侧面板阶段图标显示 ⚠ 过时标记 | `src/ui/app.ts` | 过时阶段显示 ⚠ 图标 |
-| 6.4 | 实现提示条组件（黄色过时提示 + [重新生成] [标记为最新]） | `src/ui/components/alert-bar.ts` | 过时阶段编辑区顶部显示提示条 |
-| 6.5 | 重新生成：基于最新上游重新 AI 生成 | 各 editor 文件 | 重新生成后内容更新，标记清除 |
-| 6.6 | 标记为最新：清除过时标记，保留当前内容 | 各 editor 文件 | 标记后 ⚠ 消失，内容不变 |
+| 对标缺口 | 计划位置 |
+|----------|----------|
+| 自动导演开书 | Phase 1 |
+| 项目设定/书级 framing | Phase 1 |
+| 世界观/本书世界 | Phase 3 |
+| 卷级规划和节奏板 | Phase 2 先做章节任务单；完整卷系统暂不做 |
+| 章节审核、质量修复 | Phase 2 |
+| 状态回灌 | Phase 3 |
+| 角色库、关系网、角色演变 | Phase 3 |
+| 知识库/拆书/RAG | Phase 4，SQLite FTS5 轻量版 |
+| 写法引擎 | Phase 5 |
+| 任务中心和可恢复长任务 | Phase 5 轻量版 |
+| 模型路由 | Phase 5 |
 
-### 验证命令
+## 每阶段统一验证策略
 
-```bash
-bun run src/main.ts
-# 1. 完成大纲→人物→目录→正文全流程
-# 2. 修改大纲 → 人物/目录/正文显示 ⚠
-# 3. 点"标记为最新" → ⚠ 消失
-# 4. 修改人物 → 目录/正文显示 ⚠
-# 5. 点"重新生成" → 内容更新
-```
-
-### 门禁
-
-- [ ] 级联规则与 Design Brief 一致
-- [ ] 提示条和图标正确显示
-- [ ] 重新生成/标记为最新均可工作
-- [ ] 两阶段代码审查通过
-
----
-
-## Phase 7：写作风格 + 去 AI 味机制
-
-**目标**：风格参考文本注入、高频词扫描标记、人设约束注入。
-
-### 任务
-
-| ID | 任务 | 涉及文件 | 完成标准 |
-|----|------|---------|---------|
-| 7.1 | 实现 style-reference 截断处理（2000 字上限 + 字数统计） | `src/lib/style-reference.ts` | 超长文本截断，返回截断提示 |
-| 7.2 | context-builder 集成风格参考注入（正文和润色阶段） | `src/ai/context-builder.ts` | 正文生成时上下文包含风格参考 |
-| 7.3 | 实现 AI 味高频词库加载 + 扫描标记 | `src/lib/stopwords.ts`, `src/resources/stopwords.json` | 扫描文本返回高频词位置和替换建议 |
-| 7.4 | 正文编辑区高频词可视化标记（下划线 + hover 替换建议） | `src/ui/views/content-editor.ts` | 生成后高频词可见标记 |
-| 7.5 | context-builder 集成人设约束注入：正文生成时自动注入该章出场人物人设卡片 | `src/ai/context-builder.ts` | prompt 中包含人设约束 |
-| 7.6 | 创建内置资源文件（方法论/模板/示例/高频词库） | `src/resources/**` | 所有资源文件存在，context-builder 可读取 |
-
-### 验证命令
+每个 Phase 完成后至少执行：
 
 ```bash
-bun run src/main.ts
-# 1. 配置风格参考文本（超 2000 字验证截断）
-# 2. 生成正文 → 上下文包含风格参考+人设约束
-# 3. 高频词在正文中被标记
-# 4. 上下文包含内置方法论/模板/示例
+pnpm build
+cd src-tauri && cargo check
+pnpm tauri dev
 ```
 
-### 门禁
+涉及数据库迁移时额外验证：
 
-- [ ] 风格参考注入验证
-- [ ] 高频词扫描标记可见
-- [ ] 人设约束注入验证
-- [ ] 内置资源完整性
-- [ ] 两阶段代码审查通过
+1. 旧数据库启动不报错。
+2. 新表/新字段存在。
+3. 旧项目数据仍可读取。
+4. 新功能写入后重启仍存在。
 
----
+涉及 AI 调用时额外验证：
 
-## Phase 8：Skills 系统
+1. 未配置模型时不发起请求，并提示用户配置。
+2. API 失败不覆盖旧内容。
+3. 生成/审核/修复前后的 `generation_logs` 有记录。
+4. 需要覆盖正文或大纲时先创建快照。
 
-**目标**：可加载预定义 Skill 并执行，润色 Skill 可安装和执行。
+## 完成标记规则
 
-### 任务
+- `[ ]` 未开始。
+- `[~]` 进行中。
+- `[x]` 已完成且有验证证据。
 
-| ID | 任务 | 涉及文件 | 完成标准 |
-|----|------|---------|---------|
-| 8.1 | 定义 Skill 文件格式（.skill.md：名称/描述/适用阶段/prompt 模板） | `src/skills/loader.ts` | 格式文档明确 |
-| 8.2 | 实现 Skill 加载器（启动时扫描 skills/ 目录，解析 .skill.md） | `src/skills/loader.ts` | 格式错误的 Skill 跳过并日志记录 |
-| 8.3 | 实现 Skill 执行器（按定义注入上下文+调用 AI，结果写入编辑区） | `src/skills/executor.ts` | Skill 执行后结果可观察 |
-| 8.4 | 左侧面板显示当前阶段可用 Skill 列表 | `src/ui/app.ts` | Skills 区域显示可用 Skill |
-| 8.5 | 创建润色 Skill 定义文件 | `src/skills/builtin/polish.skill.md` | 文件格式合法，可被加载执行 |
-| 8.6 | 编写 Skill 使用文档 | `docs/skills.md` | 用户可按文档创建自定义 Skill |
-
-### 验证命令
-
-```bash
-bun run src/main.ts
-# 1. Skills 列表在左面板显示
-# 2. 执行润色 Skill → 正文被二次加工
-# 3. 删除润色 Skill 文件 → 重启后列表无润色 Skill
-```
-
-### 门禁
-
-- [ ] Skill 加载+执行+结果显示
-- [ ] 格式错误时优雅降级
-- [ ] 润色 Skill 完整可用
-- [ ] 两阶段代码审查通过
-
----
-
-## Phase 9：设置 + 主题切换 + 打磨
-
-**目标**：设置视图完整，主题切换完善，整体打磨。
-
-### 任务
-
-| ID | 任务 | 涉及文件 | 完成标准 |
-|----|------|---------|---------|
-| 9.1 | 实现设置视图（模型预设管理 + 写作风格配置 + 主题切换 + 关于） | `src/ui/views/settings.ts` | 所有设置项可查看编辑 |
-| 9.2 | 模型预设 CRUD 在设置中可用 | `src/ui/views/settings.ts` | 新增/编辑/删除预设 |
-| 9.3 | 写作风格配置界面（参考文本编辑+字数统计+拟人化参数+高频词表编辑） | `src/ui/views/settings.ts` | 配置可保存生效 |
-| 9.4 | 完善快捷键覆盖所有高频操作 | `src/ui/keybindings.ts` | 所有 Design Brief 定义的快捷键可用 |
-| 9.5 | 最小终端尺寸检查（120×30） | `src/main.ts` | 小于此尺寸拒绝启动并提示 |
-| 9.6 | 全面功能验证：端到端走通大纲→人物→目录→正文全流程 | 全部 | 完整流程无阻断 |
-| 9.7 | 性能检查：大数据量（100+ 章节）下响应时间 | - | 列表滚动流畅，AI 生成不卡 UI |
-
-### 验证命令
-
-```bash
-bun run src/main.ts
-# 1. Ctrl+, 打开设置 → 配置模型/风格/主题
-# 2. Ctrl+T 切换主题 → 暗色/亮色即时生效
-# 3. 全流程：配置→创建项目→大纲→人物→目录→正文→润色→保存
-# 4. 缩小终端至 119×29 → 提示尺寸不足
-```
-
-### 门禁
-
-- [ ] 设置视图所有功能可用
-- [ ] 快捷键全覆盖
-- [ ] 端到端全流程无阻断
-- [ ] 两阶段代码审查通过
-- [ ] 最终功能验证通过
-
----
-
-## Spec 映射
-
-| Spec ID | Phase | 任务 |
-|---------|-------|------|
-| F1 项目管理 | 3 | 3.1 |
-| F2 大纲编写 | 3 | 3.3, 3.5, 3.7 |
-| F3 人物小传 | 4 | 4.1–4.5 |
-| F4 章节目录 | 5 | 5.1–5.3 |
-| F5 正文生成 | 5 | 5.4–5.7 |
-| F6 Skills 系统 | 8 | 8.1–8.6 |
-| F7 写作风格配置 | 7, 9 | 7.1–7.2, 9.3 |
-| F8 文档驱动上下文 | 1, 7 | 1.9, 7.2, 7.5, 7.6 |
-| F9 过时标记 | 6 | 6.1–6.6 |
-| F10 AI 模型配置 | 2, 9 | 2.4, 9.2 |
-| F11 内置创作资源 | 7 | 7.6 |
-| F12 去 AI 味机制 | 7, 8 | 7.2–7.5, 8.5 |
-
-## 测试策略
-
-| 层级 | 工具 | 覆盖范围 |
-|------|------|---------|
-| 单元测试 | bun:test | 所有 service、lib、AI 客户端、context-builder |
-| 集成测试 | bun:test | 数据库迁移 + service 端到端 |
-| 功能验证 | 手动 | TUI 界面交互、AI 生成流式输出、主题切换 |
-
-每个 Phase 完成后运行：
-
-```bash
-bun test               # 自动化测试全通过
-bun run src/main.ts    # 手动功能验证
-```
+只有在最终回复中列出刚运行的命令和结果摘要后，才允许把门禁标记为 `[x]`。

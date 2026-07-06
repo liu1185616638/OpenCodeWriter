@@ -4,13 +4,15 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useProjects } from "@/hooks/useProjects";
 import type { Project, CreationStage } from "@/types";
-import { CheckCircle2, Circle, BookOpen, Plus, ArrowRight } from "lucide-react";
+import { CheckCircle2, Circle, BookOpen, Plus, ArrowRight, Sparkles } from "lucide-react";
 
 const stageLabels: Record<CreationStage, string> = {
   outline: "大纲",
   characters: "人物",
   chapters: "目录",
   content: "正文",
+  world: "世界观",
+  knowledge: "知识库",
 };
 
 const stageOrder: CreationStage[] = ["outline", "characters", "chapters", "content"];
@@ -23,7 +25,7 @@ function getStageStatus(project: Project, stage: CreationStage): "done" | "activ
   return "pending";
 }
 
-export function ProjectList({ onSelectProject }: { onSelectProject: (project: Project) => void }) {
+export function ProjectList({ onSelectProject, onStartIdeaWizard }: { onSelectProject: (project: Project) => void; onStartIdeaWizard: () => void; }) {
   const { projects, loading, create, remove } = useProjects();
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
@@ -139,6 +141,14 @@ export function ProjectList({ onSelectProject }: { onSelectProject: (project: Pr
           )}
           <Button
             variant="secondary"
+            className="rounded-full px-4 py-2.5 gap-1.5"
+            onClick={onStartIdeaWizard}
+          >
+            <Sparkles className="h-4 w-4" />
+            一句话开书
+          </Button>
+          <Button
+            variant="outline"
             className="rounded-full px-4 py-2.5 gap-1.5"
             onClick={() => {
               // Focus the input for creating

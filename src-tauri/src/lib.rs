@@ -38,6 +38,7 @@ pub fn run() {
             commands::chapters::update_chapter,
             commands::chapters::delete_chapter,
             commands::chapters::reorder_chapters,
+            commands::chapters::list_chapter_reviews,
             // Contents
             commands::contents::get_content,
             commands::contents::save_content,
@@ -65,13 +66,68 @@ pub fn run() {
             commands::ai::generate_characters,
             commands::ai::generate_chapters,
             commands::ai::generate_content,
+            commands::ai::chapter_aftercare,
+            commands::ai::analyze_text,
+            commands::ai::extract_style_rules,
             commands::ai::generate_character_from_description,
             commands::ai::polish_content,
             commands::ai::polish_chapter,
+            commands::ai::generate_idea_directions,
+            commands::ai::generate_outline_from_direction,
+            commands::ai::review_chapter_content,
+            commands::ai::repair_chapter_content,
+            commands::ai::batch_generate_chapters,
             // Snapshots
             commands::snapshots::create_snapshot,
             commands::snapshots::list_snapshots,
             commands::snapshots::delete_old_snapshots,
+            // Generation Logs
+            commands::generation_logs::list_generation_logs,
+            // Project Profiles
+            commands::profiles::get_project_profile,
+            commands::profiles::save_project_profile,
+            // World Items
+            commands::world::list_world_items,
+            commands::world::create_world_item,
+            commands::world::update_world_item,
+            commands::world::delete_world_item,
+            // Character Relations
+            commands::character_assets::list_character_relations,
+            commands::character_assets::create_character_relation,
+            commands::character_assets::update_character_relation,
+            commands::character_assets::delete_character_relation,
+            // Character States
+            commands::character_assets::list_character_states,
+            commands::character_assets::create_character_state,
+            commands::character_assets::delete_character_state,
+            // Story Facts
+            commands::story::list_story_facts,
+            commands::story::create_story_fact,
+            commands::story::update_story_fact,
+            commands::story::delete_story_fact,
+            // Foreshadows
+            commands::story::list_foreshadows,
+            commands::story::create_foreshadow,
+            commands::story::update_foreshadow,
+            commands::story::delete_foreshadow,
+            // Knowledge Base
+            commands::knowledge::list_knowledge_sources,
+            commands::knowledge::import_knowledge,
+            commands::knowledge::delete_knowledge_source,
+            commands::knowledge::search_knowledge,
+            // Style Rules
+            commands::style_rules::list_style_rules,
+            commands::style_rules::create_style_rule,
+            commands::style_rules::update_style_rule,
+            commands::style_rules::delete_style_rule,
+            // Model Routes
+            commands::model_routes::list_model_routes,
+            commands::model_routes::upsert_model_route,
+            // Jobs
+            commands::jobs::list_jobs,
+            commands::jobs::create_job,
+            commands::jobs::update_job_status,
+            commands::jobs::delete_job,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
