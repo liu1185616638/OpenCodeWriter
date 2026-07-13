@@ -24,7 +24,7 @@ import { updateProjectStage } from "@/lib/tauri";
 import type { Project, CreationStage } from "@/types";
 
 type AppView = "setup" | "project-list" | "workspace" | "settings" | "idea-wizard" | "project-profile";
-type SettingsTab = "writing-style" | "model-config" | "style-rules" | "model-routes" | "shortcuts" | "about";
+type SettingsTab = "writing-style" | "model-config" | "style-rules" | "model-routes" | "mcp-permissions" | "shortcuts" | "about";
 
 function WorkspaceTitleBar({ onNewProject, onToggleTheme }: { onNewProject: () => void; onToggleTheme: () => void }) {
   const { toggleSidebar } = useSidebar();

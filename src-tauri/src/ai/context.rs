@@ -197,6 +197,15 @@ impl ContextBuilder {
                           \"relationships\": \"人物关系\",\n      \
                           \"key_events\": \"关键事件\"\n    \
                     }}\n  \
+                    ],\n  \
+                      \"relations\": [\n    \
+                        {{\n      \
+                          \"source_name\": \"角色A名\",\n      \
+                          \"target_name\": \"角色B名\",\n      \
+                          \"relation_type\": \"关系类型（如：师徒、仇敌、恋人、兄弟）\",\n      \
+                          \"tension\": \"紧张程度（如：高/中/低，可留空）\",\n      \
+                          \"summary\": \"关系简要描述\"\n    \
+                        }}\n  \
                     ]\n\
                     }}\n\n\
                     字段要求：\n\
@@ -204,7 +213,9 @@ impl ContextBuilder {
                     - 每个字段必须是字符串，不可省略\n\
                     - characters 至少包含 3 个角色\n\
                     - 人物关系要能推动情节发展\n\
-                    - 每个角色都需要清晰的动机和性格多面性\n\n\
+                    - 每个角色都需要清晰的动机和性格多面性\n\
+                    - relations 数组必须列出主要角色之间的关键关系，source_name 和 target_name 必须与 characters 中的 name 一致\n\
+                    - relations 至少包含 2 条关系\n\n\
                     必须输出完整 JSON，不可中途截断。",
                     profile_section,
                     outline,
@@ -250,7 +261,13 @@ impl ContextBuilder {
                         {{\n      \
                           \"chapter_number\": 1,\n      \
                           \"title\": \"章节标题\",\n      \
-                          \"summary\": \"章节摘要（50-100字）\"\n    \
+                          \"summary\": \"章节摘要（50-100字）\",\n      \
+                          \"goal\": \"本章目标（本章要完成什么）\",\n      \
+                          \"conflict_level\": 3,\n      \
+                          \"hook\": \"开篇钩子（用什么抓住读者）\",\n      \
+                          \"payoff\": \"收束回报（章末给读者什么满足感）\",\n      \
+                          \"must_avoid\": \"禁止事项（本章必须避免的）\",\n      \
+                          \"target_word_count\": 3000\n    \
                         }}\n  \
                       ]\n\
                     }}\n\n\
@@ -258,6 +275,12 @@ impl ContextBuilder {
                     - chapter_number 是整数，从 1 开始递增\n\
                     - title 是简洁有力的章节标题，暗示本章核心\n\
                     - summary 是 50-100 字的章节摘要，概述主要事件和推进\n\
+                    - goal 是本章要达成的叙事目标（如：主角发现关键线索）\n\
+                    - conflict_level 是 1-5 的整数，1=舒缓过渡，5=高潮转折\n\
+                    - hook 是开篇吸引读者的手法（如：以悬念开场）\n\
+                    - payoff 是章末给读者的满足感（如：揭示部分真相）\n\
+                    - must_avoid 是本章写作中必须避免的内容（如：不要让配角抢戏），可留空\n\
+                    - target_word_count 是目标字数，默认 3000\n\
                     - chapters 至少包含 5 章\n\
                     - 确保情节推进有节奏感，紧张与缓和交替，每章结尾有悬念或推动力\n\n\
                     必须输出完整 JSON，不可中途截断。",

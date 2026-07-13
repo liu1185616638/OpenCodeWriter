@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "pnpm build:sdk-adapter && tsc && vite build",
+    "build:sdk-adapter": "pnpm --dir sdk-adapter build",
     "preview": "vite preview",
     "tauri": "tauri"
   },

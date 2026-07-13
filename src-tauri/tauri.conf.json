@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.chen.opencode-writer",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "pnpm build:sdk-adapter && pnpm dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"

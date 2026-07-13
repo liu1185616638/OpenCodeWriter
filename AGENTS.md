@@ -13,6 +13,7 @@
 
 - 当前实现是 React 19 + Vite + TypeScript 前端，以及 Tauri 2 + Rust + SQLite 后端。
 - `DEV-PLAN.md` 是后续实现的主计划，已经从旧 OpenTUI 方案更新为当前 Tauri/React 架构。
+- Phase 9 的 SDK-first 路线是 Rust `SdkBackedRuntime` 调本地 Node SDK Adapter，再由 Adapter 调 `@opencode-ai/sdk`；不要新增、配置或兼容外部 OpenCode Server，也不要在普通设置页暴露 Runtime 切换。
 - `Product-Spec.md` 管功能逻辑和验收标准。
 - `Design-Brief.md` 管产品形态、交互和视觉约束；若与当前代码或后续计划冲突，先指出冲突并让用户确认是否更新上游文档。
 - `docs/ArchitectsReply/` 下的日期文档是架构建议来源。执行前按日期和问题判断是否需要参考。
@@ -33,6 +34,7 @@
 - 数据库变更统一放在 `src-tauri/src/db/migrations.rs`，并保证旧数据可启动。
 - Tauri 命令新增后同步更新 Rust model、前端类型和 `src/lib/tauri.ts` invoke 封装。
 - AI 能力必须明确输入、输出、失败处理和是否需要快照。
+- AI 底层接入不得让前端或小说业务层直接依赖 `@opencode-ai/sdk`；SDK 只允许出现在 `sdk-adapter/**` 或 Runtime 适配层边界内。默认 AI 底座为 SDK-backed，OpenAI-compatible 只作为内部 fallback / 排障路径。
 - 覆盖正文、大纲或修复内容前，优先创建快照。
 
 ## 验证门禁

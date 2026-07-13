@@ -15,13 +15,14 @@ import {
   getStyleConfig, saveStyleConfig, copyStyleConfig, fetchModels,
   listStyleRules, createStyleRule, updateStyleRule, deleteStyleRule,
   listModelRoutes, upsertModelRoute,
+  listMcpServers, saveMcpServers, listMcpTools, listMcpCallLogs,
 } from "@/lib/tauri";
 import { STOPWORDS } from "@/lib/stopwords";
-import type { StyleConfig, ModelPreset, ModelInfo, StyleRule, ModelRoute } from "@/types";
+import type { StyleConfig, ModelPreset, ModelInfo, StyleRule, ModelRoute, McpServerConfig, McpToolInfo, McpCallLog } from "@/types";
 import {
   Plus, Trash2, Save, Loader2, Pencil, X, RefreshCw,
   BookOpen, Type, Heart, Ban, Copy,
-  Sparkles, Check, AlertCircle,
+  Sparkles, Check, AlertCircle, ShieldCheck,
 } from "lucide-react";
 
 const voiceLabels: Record<string, string> = {
@@ -380,10 +381,11 @@ function ModelConfigPage() {
   };
 
   const handleSaveEdit = async () => {
-    if (!editId) return;
+    const id = editId;
+    if (id === null) return;
     try {
       setEditError(null);
-      await editPreset(editId, { name: editName, api_base: editApiBase, api_key: editApiKey, model_name: editModelName });
+      await editPreset(id, { name: editName, api_base: editApiBase, api_key: editApiKey, model_name: editModelName });
       setEditId(null); setEditAvailableModels([]); setEditFetchError(null);
     } catch (e) { setEditError(String(e)); }
   };
@@ -971,6 +973,220 @@ function ModelRouteRow({
   );
 }
 
+function McpPermissionsPage() {
+  const [servers, setServers] = useState<McpServerConfig[]>([]);
+  const [tools, setTools] = useState<McpToolInfo[]>([]);
+  const [logs, setLogs] = useState<McpCallLog[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const [serverList, toolList, logList] = await Promise.all([
+        listMcpServers(),
+        listMcpTools(),
+        listMcpCallLogs(20),
+      ]);
+      setServers(serverList);
+      setTools(toolList);
+      setLogs(logList);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const addServer = () => {
+    setServers(prev => [
+      ...prev,
+      {
+        name: "",
+        command: "",
+        args: "",
+        enabled: false,
+        allowed_tools: [],
+        require_approval: true,
+      },
+    ]);
+  };
+
+  const updateServer = (index: number, patch: Partial<McpServerConfig>) => {
+    setServers(prev => prev.map((server, i) => i === index ? { ...server, ...patch } : server));
+  };
+
+  const removeServer = (index: number) => {
+    setServers(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const save = async () => {
+    try {
+      setSaving(true);
+      setError(null);
+      await saveMcpServers(servers);
+      await load();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="flex-1 overflow-auto min-h-0 px-10 py-8">
+      <div className="mb-6 flex items-center gap-2">
+        <ShieldCheck className="h-5 w-5 text-primary" />
+        <h2 className="text-xl font-semibold text-foreground">MCP 权限</h2>
+      </div>
+
+      {error && (
+        <div className="mb-4 rounded-2xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </div>
+      ) : (
+        <div className="space-y-5">
+          <Card className="rounded-3xl border border-border shadow-sm">
+            <CardHeader className="flex flex-row items-center justify-between">
+              <CardTitle className="text-base">MCP Server</CardTitle>
+              <Button onClick={addServer} size="sm" className="rounded-full gap-1.5">
+                <Plus className="h-4 w-4" />新增
+              </Button>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {servers.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
+                  MCP 未启用
+                </div>
+              ) : (
+                servers.map((server, index) => (
+                  <div key={index} className="space-y-3 rounded-2xl border border-border bg-card p-4">
+                    <div className="grid gap-2 md:grid-cols-2">
+                      <Input
+                        value={server.name}
+                        onChange={(e) => updateServer(index, { name: e.target.value })}
+                        placeholder="名称"
+                        className="rounded-xl"
+                      />
+                      <Input
+                        value={server.command}
+                        onChange={(e) => updateServer(index, { command: e.target.value })}
+                        placeholder="命令"
+                        className="rounded-xl"
+                      />
+                    </div>
+                    <Input
+                      value={server.args}
+                      onChange={(e) => updateServer(index, { args: e.target.value })}
+                      placeholder="参数"
+                      className="rounded-xl"
+                    />
+                    <Textarea
+                      value={server.allowed_tools.join("\n")}
+                      onChange={(e) => updateServer(index, {
+                        allowed_tools: e.target.value
+                          .split(/[\n,]/)
+                          .map(item => item.trim())
+                          .filter(Boolean),
+                      })}
+                      placeholder="工具白名单，每行一个"
+                      className="min-h-24 rounded-xl"
+                    />
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                        <label className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={server.enabled}
+                            onChange={(e) => updateServer(index, { enabled: e.target.checked })}
+                          />
+                          启用
+                        </label>
+                        <label className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={server.require_approval}
+                            onChange={(e) => updateServer(index, { require_approval: e.target.checked })}
+                          />
+                          需要审批
+                        </label>
+                      </div>
+                      <Button variant="ghost" size="sm" className="rounded-full text-destructive hover:text-destructive" onClick={() => removeServer(index)}>
+                        <Trash2 className="h-4 w-4" />删除
+                      </Button>
+                    </div>
+                  </div>
+                ))
+              )}
+              <Button onClick={save} disabled={saving} className="w-full rounded-full gap-1.5">
+                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                保存 MCP 配置
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Card className="rounded-3xl border border-border shadow-sm">
+            <CardHeader>
+              <CardTitle className="text-base">已配置工具</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {tools.length === 0 ? (
+                <p className="text-sm text-muted-foreground">暂无可用 MCP 工具</p>
+              ) : (
+                tools.map((tool) => (
+                  <div key={`${tool.server_name}:${tool.tool_name}`} className="flex items-center justify-between rounded-2xl border border-border px-4 py-3">
+                    <div>
+                      <p className="text-sm font-medium">{tool.tool_name}</p>
+                      <p className="text-xs text-muted-foreground">{tool.server_name}</p>
+                    </div>
+                    <Badge variant={tool.enabled ? "default" : "secondary"}>
+                      {tool.requires_approval ? "审批" : "允许"}
+                    </Badge>
+                  </div>
+                ))
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="rounded-3xl border border-border shadow-sm">
+            <CardHeader>
+              <CardTitle className="text-base">MCP 审计</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {logs.length === 0 ? (
+                <p className="text-sm text-muted-foreground">暂无记录</p>
+              ) : (
+                logs.map((log) => (
+                  <div key={log.id} className="rounded-2xl border border-border px-4 py-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="min-w-0 truncate text-sm font-medium">{log.tool_name}</p>
+                      <Badge variant={log.success ? "default" : "destructive"}>{log.call_type}</Badge>
+                    </div>
+                    {log.error && <p className="mt-1 text-xs text-destructive">{log.error}</p>}
+                    <p className="mt-1 text-xs text-muted-foreground">{log.created_at}</p>
+                  </div>
+                ))
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ===== Main Settings Component =====
 export function Settings({ onBack: _onBack, projectId, activeTab, currentProject }: { onBack: () => void; projectId: number | null; activeTab: string; currentProject: Project | null }) {
   switch (activeTab) {
@@ -982,6 +1198,8 @@ export function Settings({ onBack: _onBack, projectId, activeTab, currentProject
       return <ModelConfigPage />;
     case "model-routes":
       return <ModelRoutesPage />;
+    case "mcp-permissions":
+      return <McpPermissionsPage />;
     case "shortcuts":
       return <ShortcutsPage />;
     case "about":

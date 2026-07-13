@@ -17,7 +17,7 @@ export function AppScrollArea({
   return (
     <ScrollArea
       className={cn(
-        "min-h-0 min-w-0 flex-1 overflow-x-hidden",
+        "min-h-0 min-w-0 flex-1 h-full overflow-x-hidden",
         padded && "px-4 py-4 sm:px-8 sm:py-5",
         className,
       )}

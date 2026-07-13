@@ -5,7 +5,9 @@ import type {
   GenerationLog, ProjectProfile, ChapterReview,
   WorldItem, CharacterRelation, CharacterState, StoryFact, Foreshadow,
   KnowledgeSource, KnowledgeChunk,
-  StyleRule, ModelRoute, Job
+  StyleRule, ModelRoute, Job,
+  RuntimeToolInfo, RuntimeSkillInfo,
+  McpServerConfig, McpToolInfo, McpApprovalRequest, McpCallLog
 } from "@/types";
 
 // Projects
@@ -127,8 +129,21 @@ export async function createModelPreset(name: string, apiBase: string, apiKey: s
   return invoke("create_model_preset", { name, apiBase, apiKey, modelName });
 }
 
-export async function updateModelPreset(id: number, fields: Record<string, string>): Promise<ModelPreset> {
-  return invoke("update_model_preset", { id, ...fields });
+type UpdateModelPresetFields = Partial<Pick<ModelPreset, "name" | "api_base" | "api_key" | "model_name">>;
+
+export async function updateModelPreset(id: number, fields: UpdateModelPresetFields): Promise<ModelPreset> {
+  const args: {
+    id: number;
+    name?: string;
+    apiBase?: string;
+    apiKey?: string;
+    modelName?: string;
+  } = { id };
+  if (fields.name !== undefined) args.name = fields.name;
+  if (fields.api_base !== undefined) args.apiBase = fields.api_base;
+  if (fields.api_key !== undefined) args.apiKey = fields.api_key;
+  if (fields.model_name !== undefined) args.modelName = fields.model_name;
+  return invoke("update_model_preset", args);
 }
 
 export async function deleteModelPreset(id: number): Promise<void> {
@@ -425,4 +440,47 @@ export async function updateJobStatus(id: number, status: string, resultJson?: s
 
 export async function deleteJob(id: number): Promise<void> {
   return invoke("delete_job", { id });
+}
+
+// Runtime Tools & Skills (Phase 8)
+export async function listRuntimeTools(): Promise<RuntimeToolInfo[]> {
+  return invoke("list_runtime_tools");
+}
+
+export async function listRuntimeSkills(): Promise<RuntimeSkillInfo[]> {
+  return invoke("list_runtime_skills");
+}
+
+export async function executeRuntimeTool(
+  toolName: string,
+  args: Record<string, unknown>,
+  sessionId?: string,
+  projectId?: number,
+): Promise<unknown> {
+  return invoke("execute_runtime_tool", { toolName, arguments: args, sessionId, projectId });
+}
+
+// MCP permissions (Phase 10)
+export async function listMcpServers(): Promise<McpServerConfig[]> {
+  return invoke("list_mcp_servers");
+}
+
+export async function saveMcpServers(servers: McpServerConfig[]): Promise<void> {
+  return invoke("save_mcp_servers", { servers });
+}
+
+export async function listMcpTools(): Promise<McpToolInfo[]> {
+  return invoke("list_mcp_tools");
+}
+
+export async function approveMcpCall(request: McpApprovalRequest): Promise<void> {
+  return invoke("approve_mcp_call", { request });
+}
+
+export async function denyMcpCall(request: McpApprovalRequest, reason: string): Promise<void> {
+  return invoke("deny_mcp_call", { request, reason });
+}
+
+export async function listMcpCallLogs(limit?: number): Promise<McpCallLog[]> {
+  return invoke("list_mcp_call_logs", { limit });
 }

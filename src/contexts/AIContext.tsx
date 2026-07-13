@@ -1,6 +1,8 @@
 import { createContext, useContext, useRef, useCallback, useState, useEffect, type ReactNode } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { Button } from "@/components/ui/button";
+import { approveMcpCall, denyMcpCall } from "@/lib/tauri";
 import type { GenerationStatus, GenerationTaskMeta } from "../types/ai";
 
 // =============================================================================
@@ -25,6 +27,12 @@ interface AiDonePayload {
 interface AiErrorPayload {
   session_id: string;
   error: string;
+}
+
+interface McpCallPayload {
+  session_id: string;
+  tool_name: string;
+  data: Record<string, unknown>;
 }
 
 export interface GenerateOptions {
@@ -63,6 +71,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const [generationMeta, setGenerationMeta] = useState<GenerationTaskMeta | null>(null);
   const [generatedCharCount, setGeneratedCharCount] = useState(0);
   const [elapsedMs, setElapsedMs] = useState(0);
+  const [pendingMcpCall, setPendingMcpCall] = useState<McpCallPayload | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const unlistenFns = useRef<UnlistenFn[]>([]);
   const onCompleteRef = useRef<GenerateOptions["onComplete"]>(undefined);
@@ -130,6 +139,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     });
     setGeneratedCharCount(0);
     setElapsedMs(0);
+    setPendingMcpCall(null);
     updateStreamedContent("");
     updateThinkingContent("");
     setError(null);
@@ -174,6 +184,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
         setGenerating(false);
         setGeneratingStage(undefined);
         setGenerationStatus("completed");
+        setPendingMcpCall(null);
         setGenerationMeta(prev => prev ? { ...prev, endedAt: Date.now() } : null);
         cleanup();
         onCompleteRef.current?.(streamedContentRef.current);
@@ -187,13 +198,20 @@ export function AiProvider({ children }: { children: ReactNode }) {
         setGenerating(false);
         setGeneratingStage(undefined);
         setGenerationStatus("failed");
+        setPendingMcpCall(null);
         setGenerationMeta(prev => prev ? { ...prev, endedAt: Date.now() } : null);
         cleanup();
         onErrorRef.current?.(event.payload.error);
       }
     });
 
-    unlistenFns.current = [chunkUnlisten, doneUnlisten, errorUnlisten];
+    const mcpUnlisten = await listen<McpCallPayload>("ai-mcp-call", (event) => {
+      if (event.payload.session_id === sessionIdRef.current) {
+        setPendingMcpCall(event.payload);
+      }
+    });
+
+    unlistenFns.current = [chunkUnlisten, doneUnlisten, errorUnlisten, mcpUnlisten];
 
     try {
       await invoke(command, { sessionId, ...args });
@@ -205,6 +223,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
           setGenerating(false);
           setGeneratingStage(undefined);
           setGenerationStatus("completed");
+          setPendingMcpCall(null);
           setGenerationMeta(prev => prev ? { ...prev, endedAt: Date.now() } : null);
           cleanup();
           onCompleteRef.current?.(streamedContentRef.current);
@@ -220,6 +239,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
       setGenerating(false);
       setGeneratingStage(undefined);
       setGenerationStatus("failed");
+      setPendingMcpCall(null);
       setGenerationMeta(prev => prev ? { ...prev, endedAt: Date.now() } : null);
       cleanup();
       onErrorRef.current?.(String(e));
@@ -231,6 +251,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     setGenerating(false);
     setGeneratingStage(undefined);
     setGenerationStatus("cancelled");
+    setPendingMcpCall(null);
     cleanup();
   }, [cleanup, clearElapsedTimer]);
 
@@ -240,6 +261,36 @@ export function AiProvider({ children }: { children: ReactNode }) {
     setGeneratedCharCount(0);
     setElapsedMs(0);
   }, []);
+
+  const approvePendingMcpCall = useCallback(async () => {
+    if (!pendingMcpCall) return;
+    try {
+      await approveMcpCall({
+        project_id: typeof pendingMcpCall.data.project_id === "number" ? pendingMcpCall.data.project_id : null,
+        session_id: pendingMcpCall.session_id,
+        server_name: typeof pendingMcpCall.data.server_name === "string" ? pendingMcpCall.data.server_name : "runtime",
+        tool_name: pendingMcpCall.tool_name,
+        arguments: pendingMcpCall.data,
+      });
+    } finally {
+      setPendingMcpCall(null);
+    }
+  }, [pendingMcpCall]);
+
+  const denyPendingMcpCall = useCallback(async () => {
+    if (!pendingMcpCall) return;
+    try {
+      await denyMcpCall({
+        project_id: typeof pendingMcpCall.data.project_id === "number" ? pendingMcpCall.data.project_id : null,
+        session_id: pendingMcpCall.session_id,
+        server_name: typeof pendingMcpCall.data.server_name === "string" ? pendingMcpCall.data.server_name : "runtime",
+        tool_name: pendingMcpCall.tool_name,
+        arguments: pendingMcpCall.data,
+      }, "用户拒绝");
+    } finally {
+      setPendingMcpCall(null);
+    }
+  }, [pendingMcpCall]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -265,6 +316,26 @@ export function AiProvider({ children }: { children: ReactNode }) {
       cancel,
     }}>
       {children}
+      {pendingMcpCall && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-lg rounded-2xl border border-border bg-background p-5 shadow-xl">
+            <h2 className="text-base font-semibold text-foreground">MCP 调用审批</h2>
+            <div className="mt-3 space-y-2 text-sm">
+              <div className="rounded-xl bg-muted px-3 py-2">
+                <p className="text-xs text-muted-foreground">工具</p>
+                <p className="break-all font-medium">{pendingMcpCall.tool_name}</p>
+              </div>
+              <pre className="max-h-48 overflow-auto rounded-xl bg-muted px-3 py-2 text-xs">
+                {JSON.stringify(pendingMcpCall.data, null, 2)}
+              </pre>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="outline" className="rounded-full" onClick={denyPendingMcpCall}>拒绝</Button>
+              <Button className="rounded-full" onClick={approvePendingMcpCall}>批准</Button>
+            </div>
+          </div>
+        </div>
+      )}
     </AiContext.Provider>
   );
 }

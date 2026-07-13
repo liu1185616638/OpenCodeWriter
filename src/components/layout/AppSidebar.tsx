@@ -31,7 +31,7 @@ import {
   PanelLeft, EllipsisVertical, ArrowLeft,
   BookOpen as BookIcon,
   PenLine, Cpu, Keyboard, Info, Globe, Library,
-  FolderOpen, Loader2, History, Settings as SettingsIcon, Sparkles, Route,
+  FolderOpen, Loader2, History, Settings as SettingsIcon, Sparkles, Route, ShieldCheck,
 } from "lucide-react";
 import { getProjectProgress, isStale } from "@/lib/tauri";
 import { GenerationHistoryPanel } from "@/components/ai/GenerationHistoryPanel";
@@ -45,11 +45,12 @@ const stages: { key: CreationStage; label: string; icon: React.ElementType }[] =
   { key: "knowledge", label: "知识库", icon: Library },
 ];
 
-const settingsNavItems: { key: "writing-style" | "model-config" | "style-rules" | "model-routes" | "shortcuts" | "about"; label: string; icon: React.ElementType }[] = [
+const settingsNavItems: { key: "writing-style" | "model-config" | "style-rules" | "model-routes" | "mcp-permissions" | "shortcuts" | "about"; label: string; icon: React.ElementType }[] = [
   { key: "writing-style", label: "写作风格", icon: PenLine },
   { key: "style-rules", label: "写法规则", icon: Sparkles },
   { key: "model-config", label: "模型配置", icon: Cpu },
   { key: "model-routes", label: "模型路由", icon: Route },
+  { key: "mcp-permissions", label: "MCP 权限", icon: ShieldCheck },
   { key: "shortcuts", label: "快捷键", icon: Keyboard },
   { key: "about", label: "关于", icon: Info },
 ];
@@ -247,7 +248,7 @@ export function AppSidebar({
   onSelectStage: (stage: CreationStage) => void;
   onNewProject: () => void;
   onOpenSettings: () => void;
-  onSelectSettingsTab: (tab: "writing-style" | "model-config" | "style-rules" | "model-routes" | "shortcuts" | "about") => void;
+  onSelectSettingsTab: (tab: "writing-style" | "model-config" | "style-rules" | "model-routes" | "mcp-permissions" | "shortcuts" | "about") => void;
   onBackFromSettings: () => void;
   onOpenProjectProfile?: () => void;
   onStartIdeaWizard?: () => void;

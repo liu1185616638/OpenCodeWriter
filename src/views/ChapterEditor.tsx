@@ -13,7 +13,7 @@ import { useAppEvents } from "@/hooks/useAppEvents";
 import { reorderChapters } from "@/lib/tauri";
 import { StaleAlert } from "@/components/shared/StaleAlert";
 import { FlowGuide } from "@/components/flow/FlowGuide";
-import { StreamingView } from "@/components/shared/StreamingView";
+import { GeneratingLoader } from "@/components/shared/GeneratingLoader";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { WorkspacePageLayout } from "@/components/editor/WorkspacePageLayout";
 import { EditorActionBar } from "@/components/editor/EditorActionBar";
@@ -28,7 +28,7 @@ export function ChapterEditor({ project }: { project: Project }) {
   const { outline, load: loadOutline } = useOutline(project.id);
   const { characters, load: loadCharacters } = useCharacters(project.id);
   const { currentPreset, currentPresetId, switchPreset, presets } = useSettings();
-  const { generating, streamedContent, thinkingContent, generatingStage, error, generate, cancel } = useAI();
+  const { generating, streamedContent, thinkingContent, generatingStage, error, generate, cancel, generatedCharCount, elapsedMs, generationMeta } = useAI();
   const [selectedId, setSelectedId] = useState<number | null>(null);
 
   // Task sheet fields
@@ -103,6 +103,7 @@ export function ChapterEditor({ project }: { project: Project }) {
       args: {
         projectId: project.id,
         presetId: currentPreset.id,
+        modelName: currentPreset.model_name,
       },
       onComplete: () => {
         load();
@@ -267,10 +268,14 @@ export function ChapterEditor({ project }: { project: Project }) {
         <ScrollArea className="min-w-0 flex-1 px-4 py-5 sm:px-8">
           <div className="min-h-full w-full min-w-0 space-y-3 pr-2 sm:pr-3">
             {generating && generatingStage === "chapters" ? (
-              <StreamingView
-                content={streamedContent}
+              <GeneratingLoader
                 thinkingContent={thinkingContent}
+                outputContent={streamedContent}
+                label="正在生成章节目录..."
                 generating={generating}
+                elapsedMs={elapsedMs}
+                charCount={generatedCharCount}
+                modelName={generationMeta?.modelName}
               />
             ) : selectedChapter ? (
               <>

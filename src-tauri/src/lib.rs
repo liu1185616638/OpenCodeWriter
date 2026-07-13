@@ -128,6 +128,16 @@ pub fn run() {
             commands::jobs::create_job,
             commands::jobs::update_job_status,
             commands::jobs::delete_job,
+            // Runtime Tools & Skills (Phase 8)
+            commands::runtime_tools::list_runtime_tools,
+            commands::runtime_tools::list_runtime_skills,
+            commands::runtime_tools::execute_runtime_tool,
+            commands::runtime_tools::list_mcp_servers,
+            commands::runtime_tools::save_mcp_servers,
+            commands::runtime_tools::list_mcp_tools,
+            commands::runtime_tools::approve_mcp_call,
+            commands::runtime_tools::deny_mcp_call,
+            commands::runtime_tools::list_mcp_call_logs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

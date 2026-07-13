@@ -13,7 +13,7 @@ import { useAI } from "@/contexts/AIContext";
 import { useAppEvents } from "@/hooks/useAppEvents";
 import { StaleAlert } from "@/components/shared/StaleAlert";
 import { FlowGuide } from "@/components/flow/FlowGuide";
-import { StreamingView } from "@/components/shared/StreamingView";
+import { GeneratingLoader } from "@/components/shared/GeneratingLoader";
 import { WorkspacePageLayout } from "@/components/editor/WorkspacePageLayout";
 import { AppScrollArea } from "@/components/shared/AppScrollArea";
 import { EditorActionBar } from "@/components/editor/EditorActionBar";
@@ -168,7 +168,7 @@ export function CharacterEditor({ project }: { project: Project }) {
   const { characters, main, supporting, minor, loading, load, update, remove } = useCharacters(project.id);
   const { outline, load: loadOutline } = useOutline(project.id);
   const { currentPreset, currentPresetId, switchPreset, presets } = useSettings();
-  const { generating, streamedContent, thinkingContent, generatingStage, error, generate, cancel } = useAI();
+  const { generating, streamedContent, thinkingContent, generatingStage, error, generate, cancel, generatedCharCount, elapsedMs, generationMeta } = useAI();
   const { relations, states, load: loadAssets, createRelation, removeRelation, removeState } = useCharacterAssets(project.id);
 
   const [showAddDialog, setShowAddDialog] = useState(false);
@@ -193,9 +193,11 @@ export function CharacterEditor({ project }: { project: Project }) {
       args: {
         projectId: project.id,
         presetId: currentPreset.id,
+        modelName: currentPreset.model_name,
       },
       onComplete: () => {
         load();
+        loadAssets();
         toast.success("人物已生成");
       },
       onError: (err) => {
@@ -212,11 +214,13 @@ export function CharacterEditor({ project }: { project: Project }) {
       args: {
         projectId: project.id,
         presetId: currentPreset.id,
+        modelName: currentPreset.model_name,
         description: newDescription.trim(),
         tier: newTier,
       },
       onComplete: () => {
         load();
+        loadAssets();
         toast.success("人物已生成并保存");
       },
       onError: (err) => {
@@ -327,11 +331,15 @@ export function CharacterEditor({ project }: { project: Project }) {
       {activeTab === "characters" && (
       <AppScrollArea>
         <div className="w-full min-w-0 max-w-full space-y-6">
-          {generating && generatingStage === "characters" && (
-            <StreamingView
-              content={streamedContent}
+            {generating && generatingStage === "characters" && (
+            <GeneratingLoader
               thinkingContent={thinkingContent}
+              outputContent={streamedContent}
+              label="正在生成人物..."
               generating={generating}
+              elapsedMs={elapsedMs}
+              charCount={generatedCharCount}
+              modelName={generationMeta?.modelName}
             />
           )}
 

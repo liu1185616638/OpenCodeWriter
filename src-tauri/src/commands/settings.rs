@@ -1,5 +1,5 @@
 use rusqlite::{params, OptionalExtension};
-use tauri::State;
+use tauri::{AppHandle, State};
 use serde::{Deserialize, Serialize};
 
 use crate::db::{DbState, get_conn};
@@ -198,4 +198,42 @@ pub fn delete_model_preset(id: i64, state: State<'_, DbState>) -> Result<(), Str
     conn.execute("DELETE FROM model_presets WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Load runtime configuration from settings table (helper for commands/ai.rs)
+pub fn get_runtime_config(state: &State<'_, DbState>) -> crate::ai::runtime::manager::RuntimeConfig {
+    let conn = match get_conn(state) {
+        Ok(c) => c,
+        Err(_) => return crate::ai::runtime::manager::RuntimeConfig::default(),
+    };
+
+    let get = |key: &str| -> Option<String> {
+        conn.query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![key],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+    };
+
+    crate::ai::runtime::manager::RuntimeConfig {
+        default_runtime: crate::ai::runtime::RUNTIME_SDK_BACKED.to_string(),
+        fallback_runtime: crate::ai::runtime::RUNTIME_OPENAI_COMPATIBLE.to_string(),
+        sdk_adapter_command: get("sdk_adapter_command")
+            .unwrap_or_else(|| "node".to_string()),
+        sdk_adapter_args: get("sdk_adapter_args")
+            .unwrap_or_default(),
+        thinking_policy: get("sdk_thinking_policy")
+            .unwrap_or_else(|| "summary-only".to_string()),
+        require_tool_approval: get("sdk_require_tool_approval")
+            .map(|v| v == "true")
+            .unwrap_or(true),
+    }
+}
+
+/// Load runtime configuration from AppHandle (for commands that already dropped State)
+pub fn get_runtime_config_from_app(app: &AppHandle) -> crate::ai::runtime::manager::RuntimeConfig {
+    use tauri::Manager;
+    let state = app.state::<crate::db::DbState>();
+    get_runtime_config(&state)
 }

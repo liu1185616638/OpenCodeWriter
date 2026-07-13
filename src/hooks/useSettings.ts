@@ -49,7 +49,7 @@ export function useSettings() {
     }
   }, []);
 
-  const editPreset = useCallback(async (id: number, fields: Record<string, string>) => {
+  const editPreset = useCallback(async (id: number, fields: Partial<Pick<ModelPreset, "name" | "api_base" | "api_key" | "model_name">>) => {
     const updated = await updateModelPreset(id, fields);
     setPresets(prev => prev.map(p => p.id === id ? updated : p));
     return updated;

@@ -1,13 +1,13 @@
-use futures::StreamExt;
 use rusqlite::{params, OptionalExtension};
 use tauri::{AppHandle, Manager, State};
 
-use crate::ai::client::{AiClient, ChatMessage};
 use crate::ai::context::{ContextBuilder, ChapterTaskSheet};
-use crate::ai::events;
+use crate::ai::tasks::service::{
+    GenerationLogContext, strip_thinking_tags,
+};
 use crate::db::{get_conn, DbState};
 use crate::models::{Character, Chapter, ModelPreset, StyleConfig};
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
 
 /// Phase 5.4: Resolve preset by task type when preset_id is 0.
 /// If preset_id > 0, use it directly (manual selection).
@@ -41,6 +41,26 @@ fn get_preset(state: &State<'_, DbState>, preset_id: i64) -> Result<ModelPreset,
         },
     )
     .map_err(|e| e.to_string())
+}
+
+fn parse_json_response<T: DeserializeOwned>(json_text: &str, label: &str) -> Result<T, String> {
+    match serde_json::from_str(json_text) {
+        Ok(value) => Ok(value),
+        Err(first_error) => {
+            let message = first_error.to_string();
+            if !message.contains("control character") {
+                return Err(format!("{} JSON 解析失败: {}", label, first_error));
+            }
+
+            let sanitized = remove_json_control_chars(json_text);
+            serde_json::from_str(&sanitized)
+                .map_err(|_| format!("{} JSON 解析失败: {}", label, first_error))
+        }
+    }
+}
+
+fn remove_json_control_chars(input: &str) -> String {
+    input.chars().filter(|c| !c.is_control()).collect()
 }
 
 fn get_outline_content(state: &State<'_, DbState>, project_id: i64) -> Result<String, String> {
@@ -271,8 +291,7 @@ fn update_polished_chapters(
         .trim_end_matches("```")
         .trim();
 
-    let response: ChaptersResponse = serde_json::from_str(json_text)
-        .map_err(|e| format!("章节 JSON 解析失败: {}", e))?;
+    let response: ChaptersResponse = parse_json_response(json_text, "章节")?;
 
     let conn = get_conn(state)?;
     let mut updated = 0;
@@ -298,215 +317,6 @@ fn update_polished_chapters(
     Ok(updated)
 }
 
-/// Context for writing a generation_logs entry
-struct GenerationLogContext {
-    project_id: Option<i64>,
-    target_type: String,
-    target_id: Option<i64>,
-    command: String,
-    model_name: String,
-    input_chars: usize,
-}
-
-/// Insert a "started" generation log entry, returns the log id (0 on failure or when project_id is None)
-fn insert_generation_log(app: &AppHandle, ctx: &GenerationLogContext) -> i64 {
-    let project_id = match ctx.project_id {
-        Some(id) => id,
-        None => return 0, // Skip logging for non-project operations (e.g. idea generation)
-    };
-    let state = app.state::<DbState>();
-    let conn = match get_conn(&state) {
-        Ok(c) => c,
-        Err(_) => return 0,
-    };
-    let res = conn.execute(
-        "INSERT INTO generation_logs (project_id, target_type, target_id, command, model_name, status, error, input_chars, output_chars, started_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, 'started', '', ?6, 0, datetime('now'))",
-        params![project_id, ctx.target_type, ctx.target_id, ctx.command, ctx.model_name, ctx.input_chars as i64],
-    );
-    if res.is_ok() { conn.last_insert_rowid() } else { 0 }
-}
-
-/// Update a generation log entry with final status (best-effort, errors ignored)
-fn finish_generation_log(app: &AppHandle, log_id: i64, status: &str, error: &str, output_chars: usize) {
-    if log_id <= 0 { return; }
-    let state = app.state::<DbState>();
-    let conn = match get_conn(&state) {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    let _ = conn.execute(
-        "UPDATE generation_logs SET status = ?1, error = ?2, output_chars = ?3, ended_at = datetime('now') WHERE id = ?4",
-        params![status, error, output_chars as i64, log_id],
-    );
-}
-
-async fn stream_and_emit(
-    client: &AiClient,
-    messages: Vec<ChatMessage>,
-    app: &AppHandle,
-    session_id: &str,
-    log_ctx: &GenerationLogContext,
-) -> Result<String, String> {
-    let log_id = insert_generation_log(app, log_ctx);
-    let mut stream = client.stream_chat(messages);
-    let mut full_content = String::new();
-    let mut chunk_count: u32 = 0;
-    // State machine for detecting <thinking>/皮肤病 tags in content deltas.
-    // Models that don't support the reasoning_content SSE field may output
-    // thinking text wrapped in these tags directly in the content delta.
-    let mut inside_thinking = false;
-
-    while let Some(item) = stream.next().await {
-        match item {
-            Ok(chunk) => {
-                chunk_count += 1;
-                eprintln!("[stream] chunk #{} type={} len={}", chunk_count, chunk.chunk_type, chunk.text.len());
-
-                if chunk.chunk_type == "content" {
-                    // Try to split <thinking>/皮肤病 tags from content deltas
-                    let parts = split_thinking_tags(&chunk.text, &mut inside_thinking);
-                    for (text, chunk_type) in parts {
-                        if chunk_type == "content" {
-                            full_content.push_str(&text);
-                        }
-                        events::emit_chunk(app, session_id, &text, &chunk_type);
-                    }
-                } else {
-                    // thinking chunks from reasoning_content field — pass through
-                    events::emit_chunk(app, session_id, &chunk.text, &chunk.chunk_type);
-                }
-            }
-            Err(e) => {
-                eprintln!("[stream] error after {} chunks: {}", chunk_count, e);
-                finish_generation_log(app, log_id, "failed", &e, full_content.len());
-                events::emit_error(app, session_id, &e);
-                return Err(e);
-            }
-        }
-    }
-
-    eprintln!("[stream] done, {} chunks, content len={}", chunk_count, full_content.len());
-    finish_generation_log(app, log_id, "success", "", full_content.len());
-    events::emit_done(app, session_id);
-    Ok(full_content)
-}
-
-/// Tag pairs to detect in content deltas.
-const THINKING_TAG_PAIRS: &[(&str, &str)] = &[
-    ("<thinking>", "</thinking>"),
-    ("<think>", "</think>"),
-];
-
-/// Split a content delta into (text, chunk_type) pairs by detecting
-/// `<thinking>`/`<think>` tags. Maintains `inside_thinking` state across
-/// calls to handle tags that span delta boundaries.
-///
-/// Returns a vec of (text, "thinking"|"content") pairs. Empty strings are
-/// not emitted.
-fn split_thinking_tags(delta: &str, inside_thinking: &mut bool) -> Vec<(String, String)> {
-    let mut results = Vec::new();
-    let mut pos = 0;
-    let len = delta.len();
-
-    if *inside_thinking {
-        // Look for any closing tag
-        let mut found_close: Option<(usize, usize, &str)> = None; // (close_start, close_end, close_tag)
-        for (_, close_tag) in THINKING_TAG_PAIRS {
-            if let Some(idx) = delta.find(close_tag) {
-                match found_close {
-                    None => found_close = Some((idx, idx + close_tag.len(), *close_tag)),
-                    Some((prev_idx, _, _)) if idx < prev_idx => {
-                        found_close = Some((idx, idx + close_tag.len(), *close_tag))
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        match found_close {
-            Some((close_start, close_end, _)) => {
-                // Everything before close is thinking
-                if close_start > 0 {
-                    results.push((delta[..close_start].to_string(), "thinking".to_string()));
-                }
-                pos = close_end;
-                *inside_thinking = false;
-            }
-            None => {
-                // Still inside thinking — entire delta is thinking
-                if !delta.is_empty() {
-                    results.push((delta.to_string(), "thinking".to_string()));
-                }
-                return results;
-            }
-        }
-    }
-
-    // Outside thinking — scan for opening tags
-    while pos < len {
-        let remaining = &delta[pos..];
-
-        // Find the earliest opening tag
-        let mut found_open: Option<(usize, usize, usize, &str, &str)> = None;
-        // (open_idx_in_remaining, open_end, open_tag_len, open_tag, close_tag)
-        for (open_tag, close_tag) in THINKING_TAG_PAIRS {
-            if let Some(idx) = remaining.find(open_tag) {
-                let open_end = idx + open_tag.len();
-                match found_open {
-                    None => found_open = Some((idx, open_end, open_tag.len(), *open_tag, *close_tag)),
-                    Some((prev_idx, _, _, _, _)) if idx < prev_idx => {
-                        found_open = Some((idx, open_end, open_tag.len(), *open_tag, *close_tag))
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        match found_open {
-            Some((open_idx, open_end, _, _, close_tag)) => {
-                // Content before the opening tag
-                if open_idx > 0 {
-                    let content = remaining[..open_idx].to_string();
-                    if !content.is_empty() {
-                        results.push((content, "content".to_string()));
-                    }
-                }
-
-                // Check if closing tag is in the same remaining text
-                let after_open = &remaining[open_end..];
-                if let Some(close_idx) = after_open.find(close_tag) {
-                    // Complete thinking block within this delta
-                    let thinking = after_open[..close_idx].to_string();
-                    if !thinking.is_empty() {
-                        results.push((thinking, "thinking".to_string()));
-                    }
-                    pos += open_end + close_idx + close_tag.len();
-                    // inside_thinking stays false — continue scanning
-                } else {
-                    // Thinking continues into next delta
-                    let thinking = after_open.to_string();
-                    if !thinking.is_empty() {
-                        results.push((thinking, "thinking".to_string()));
-                    }
-                    *inside_thinking = true;
-                    break;
-                }
-            }
-            None => {
-                // No more opening tags — rest is content
-                let content = remaining.to_string();
-                if !content.is_empty() {
-                    results.push((content, "content".to_string()));
-                }
-                break;
-            }
-        }
-    }
-
-    results
-}
-
 #[tauri::command]
 pub async fn generate_outline(
     project_id: i64,
@@ -520,22 +330,38 @@ pub async fn generate_outline(
     let existing_content = get_outline_content(&state, project_id).unwrap_or_default();
     let profile = crate::commands::profiles::get_profile(&state, project_id)?;
     let preset = resolve_preset(&state, preset_id, "outline")?;
+
+    // Load runtime config (Phase 6.5)
+    let runtime_config = crate::commands::settings::get_runtime_config(&state);
     drop(state);
 
     let builder = ContextBuilder::new();
     let messages = builder.build_outline_context(&project_name, &existing_content, profile.as_ref());
-    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
+
+    // Build AiRequest and execute through Runtime
+    let request = crate::ai::tasks::request_builder::build_request(
+        crate::ai::tasks::task_type::OUTLINE,
+        messages,
+    );
+    let runtime = crate::ai::runtime::AiRuntimeManager::create(&runtime_config, &preset);
 
     let log_ctx = GenerationLogContext {
         project_id: Some(project_id),
         target_type: "outline".to_string(),
         target_id: None,
-        command: "generate_outline".to_string(),
+        command: crate::ai::tasks::task_type::CMD_GENERATE_OUTLINE.to_string(),
         model_name: preset.model_name,
         input_chars: existing_content.len(),
     };
 
-    stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
+    crate::ai::tasks::service::AiTaskService::execute(
+        &app,
+        runtime.as_ref(),
+        request,
+        &session_id,
+        &log_ctx,
+    )
+    .await?;
 
     Ok(session_id)
 }
@@ -553,34 +379,23 @@ struct CharacterJson {
     key_events: String,
 }
 
+/// JSON 角色关系数据结构，用于解析 AI 返回的结构化关系
+#[derive(Debug, Deserialize)]
+struct RelationJson {
+    source_name: String,
+    target_name: String,
+    relation_type: String,
+    #[serde(default)]
+    tension: String,
+    #[serde(default)]
+    summary: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct CharactersResponse {
     characters: Vec<CharacterJson>,
-}
-
-/// Strip <thinking>...</thinking> tags from content before JSON parsing.
-/// Uses manual scan instead of regex crate to avoid adding a dependency.
-fn strip_thinking_tags(content: &str) -> String {
-    let mut result = String::new();
-    let mut pos = 0;
-    let open = "<thinking>";
-    let close = "</thinking>";
-
-    while let Some(start) = content[pos..].find(open) {
-        // Content before the opening tag
-        result.push_str(&content[pos..pos + start]);
-        let after_open = pos + start + open.len();
-        if let Some(end) = content[after_open..].find(close) {
-            // Skip the thinking block entirely
-            pos = after_open + end + close.len();
-        } else {
-            // Unclosed thinking tag — skip rest
-            break;
-        }
-    }
-    // Remaining content after all thinking blocks
-    result.push_str(&content[pos..]);
-    result.trim().to_string()
+    #[serde(default)]
+    relations: Vec<RelationJson>,
 }
 
 /// Parse AI-returned JSON characters and insert into database
@@ -603,22 +418,36 @@ fn save_generated_characters(
     let conn = get_conn(state)?;
     let mut saved = 0;
 
+    // Map character name -> id for relation insertion
+    let mut name_to_id: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+
     for ch in &response.characters {
         // Skip empty names
         if ch.name.trim().is_empty() {
             continue;
         }
 
+        let name_trimmed = ch.name.trim();
+
         // Check if character with same name already exists
         let exists: bool = conn
             .query_row(
                 "SELECT COUNT(*) > 0 FROM characters WHERE project_id = ?1 AND name = ?2",
-                params![project_id, ch.name.trim()],
+                params![project_id, name_trimmed],
                 |row| row.get(0),
             )
             .map_err(|e| e.to_string())?;
 
         if exists {
+            // Look up existing character id for relation insertion
+            let existing_id: i64 = conn
+                .query_row(
+                    "SELECT id FROM characters WHERE project_id = ?1 AND name = ?2",
+                    params![project_id, name_trimmed],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            name_to_id.insert(name_trimmed.to_string(), existing_id);
             continue; // Skip duplicates
         }
 
@@ -641,7 +470,7 @@ fn save_generated_characters(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 project_id,
-                ch.name.trim(),
+                name_trimmed,
                 tier,
                 ch.identity.trim(),
                 ch.appearance.trim(),
@@ -654,7 +483,75 @@ fn save_generated_characters(
         )
         .map_err(|e| format!("插入人物失败: {}", e))?;
 
+        let new_id = conn.last_insert_rowid();
+        name_to_id.insert(name_trimmed.to_string(), new_id);
         saved += 1;
+    }
+
+    // Save structured relations into character_relations table
+    for rel in &response.relations {
+        let source_name = rel.source_name.trim();
+        let target_name = rel.target_name.trim();
+        let rel_type = rel.relation_type.trim();
+        if source_name.is_empty() || target_name.is_empty() || rel_type.is_empty() {
+            continue;
+        }
+
+        let source_id = match name_to_id.get(source_name) {
+            Some(id) => Some(*id),
+            None => {
+                // Try to find by name in case character was skipped (duplicate)
+                conn.query_row(
+                    "SELECT id FROM characters WHERE project_id = ?1 AND name = ?2",
+                    params![project_id, source_name],
+                    |row| row.get(0),
+                )
+                .optional()
+                .ok()
+                .flatten()
+            }
+        };
+        let target_id = match name_to_id.get(target_name) {
+            Some(id) => Some(*id),
+            None => {
+                conn.query_row(
+                    "SELECT id FROM characters WHERE project_id = ?1 AND name = ?2",
+                    params![project_id, target_name],
+                    |row| row.get(0),
+                )
+                .optional()
+                .ok()
+                .flatten()
+            }
+        };
+
+        if let (Some(src_id), Some(tgt_id)) = (source_id, target_id) {
+            // Check if relation already exists to avoid duplicates
+            let rel_exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) > 0 FROM character_relations \
+                     WHERE project_id = ?1 AND source_character_id = ?2 AND target_character_id = ?3 AND relation_type = ?4",
+                    params![project_id, src_id, tgt_id, rel_type],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false);
+
+            if !rel_exists {
+                conn.execute(
+                    "INSERT INTO character_relations (project_id, source_character_id, target_character_id, relation_type, tension, summary) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        project_id,
+                        src_id,
+                        tgt_id,
+                        rel_type,
+                        rel.tension.trim(),
+                        rel.summary.trim(),
+                    ],
+                )
+                .map_err(|e| format!("插入角色关系失败: {}", e))?;
+            }
+        }
     }
 
     Ok(saved)
@@ -671,27 +568,41 @@ pub async fn generate_characters(
     let outline_content = get_outline_content(&state, project_id)?;
     let profile = crate::commands::profiles::get_profile(&state, project_id)?;
     let preset = resolve_preset(&state, preset_id, "characters")?;
+
+    let runtime_config = crate::commands::settings::get_runtime_config(&state);
     drop(state);
 
     let builder = ContextBuilder::new();
     let messages = builder.build_characters_context(&outline_content, profile.as_ref());
-    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
+    let request = crate::ai::tasks::request_builder::build_request(
+        crate::ai::tasks::task_type::CHARACTERS,
+        messages,
+    );
+    let runtime = crate::ai::runtime::AiRuntimeManager::create(&runtime_config, &preset);
 
     let log_ctx = GenerationLogContext {
         project_id: Some(project_id),
         target_type: "characters".to_string(),
         target_id: None,
-        command: "generate_characters".to_string(),
+        command: crate::ai::tasks::task_type::CMD_GENERATE_CHARACTERS.to_string(),
         model_name: preset.model_name,
         input_chars: outline_content.len(),
     };
 
-    let content = stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
+    let content = crate::ai::tasks::service::AiTaskService::execute_without_done(
+        &app,
+        runtime.as_ref(),
+        request,
+        &session_id,
+        &log_ctx,
+    )
+    .await?;
 
     // Parse JSON and insert characters into database
     let db_state = app.state::<DbState>();
     let count = save_generated_characters(&db_state, project_id, &content)?;
     eprintln!("[generate_characters] saved {} characters", count);
+    crate::ai::events::emit_done(&app, &session_id);
 
     Ok(session_id)
 }
@@ -702,6 +613,18 @@ struct ChapterJson {
     chapter_number: i64,
     title: String,
     summary: String,
+    #[serde(default)]
+    goal: String,
+    #[serde(default)]
+    conflict_level: Option<i64>,
+    #[serde(default)]
+    hook: String,
+    #[serde(default)]
+    payoff: String,
+    #[serde(default)]
+    must_avoid: String,
+    #[serde(default)]
+    target_word_count: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -722,8 +645,7 @@ fn save_generated_chapters(
         .trim_end_matches("```")
         .trim();
 
-    let response: ChaptersResponse = serde_json::from_str(json_text)
-        .map_err(|e| format!("章节 JSON 解析失败: {}", e))?;
+    let response: ChaptersResponse = parse_json_response(json_text, "章节")?;
 
     let conn = get_conn(state)?;
     let mut saved = 0;
@@ -756,15 +678,24 @@ fn save_generated_chapters(
             )
             .map_err(|e| e.to_string())?;
 
+        let conflict_level = ch.conflict_level.unwrap_or(3);
+        let target_word_count = ch.target_word_count.unwrap_or(3000);
+
         conn.execute(
-            "INSERT INTO chapters (project_id, chapter_number, title, summary, sort_order) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO chapters (project_id, chapter_number, title, summary, sort_order, goal, conflict_level, hook, payoff, must_avoid, target_word_count) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 project_id,
                 ch.chapter_number,
                 ch.title.trim(),
                 ch.summary.trim(),
                 max_sort + 1,
+                ch.goal.trim(),
+                conflict_level,
+                ch.hook.trim(),
+                ch.payoff.trim(),
+                ch.must_avoid.trim(),
+                target_word_count,
             ],
         )
         .map_err(|e| format!("插入章节失败: {}", e))?;
@@ -787,27 +718,41 @@ pub async fn generate_chapters(
     let characters_summary = get_characters_summary(&state, project_id)?;
     let profile = crate::commands::profiles::get_profile(&state, project_id)?;
     let preset = resolve_preset(&state, preset_id, "chapters")?;
+
+    let runtime_config = crate::commands::settings::get_runtime_config(&state);
     drop(state);
 
     let builder = ContextBuilder::new();
     let messages = builder.build_chapters_context(&outline_content, &characters_summary, profile.as_ref());
-    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
+    let request = crate::ai::tasks::request_builder::build_request(
+        crate::ai::tasks::task_type::CHAPTERS,
+        messages,
+    );
+    let runtime = crate::ai::runtime::AiRuntimeManager::create(&runtime_config, &preset);
 
     let log_ctx = GenerationLogContext {
         project_id: Some(project_id),
         target_type: "chapters".to_string(),
         target_id: None,
-        command: "generate_chapters".to_string(),
+        command: crate::ai::tasks::task_type::CMD_GENERATE_CHAPTERS.to_string(),
         model_name: preset.model_name,
         input_chars: outline_content.len() + characters_summary.len(),
     };
 
-    let content = stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
+    let content = crate::ai::tasks::service::AiTaskService::execute_without_done(
+        &app,
+        runtime.as_ref(),
+        request,
+        &session_id,
+        &log_ctx,
+    )
+    .await?;
 
     // Parse JSON and insert chapters into database
     let db_state = app.state::<DbState>();
     let count = save_generated_chapters(&db_state, project_id, &content)?;
     eprintln!("[generate_chapters] saved {} chapters", count);
+    crate::ai::events::emit_done(&app, &session_id);
 
     Ok(session_id)
 }
@@ -845,6 +790,8 @@ pub async fn generate_content(
     let assets_section = format!("{}{}{}{}{}{}", world_summary, char_states_summary, facts_summary, foreshadows_summary, knowledge_summary, style_rules_summary);
 
     let preset = resolve_preset(&state, preset_id, "content")?;
+
+    let runtime_config = crate::commands::settings::get_runtime_config(&state);
     drop(state);
 
     let builder = ContextBuilder::new();
@@ -861,18 +808,29 @@ pub async fn generate_content(
         Some(&task_sheet),
         &assets_section,
     );
-    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
+    let request = crate::ai::tasks::request_builder::build_request(
+        crate::ai::tasks::task_type::CONTENT,
+        messages,
+    );
+    let runtime = crate::ai::runtime::AiRuntimeManager::create(&runtime_config, &preset);
 
     let log_ctx = GenerationLogContext {
         project_id: Some(project_id),
         target_type: "content".to_string(),
         target_id: Some(chapter_id),
-        command: "generate_content".to_string(),
+        command: crate::ai::tasks::task_type::CMD_GENERATE_CONTENT.to_string(),
         model_name: preset.model_name,
         input_chars: outline_content.len() + characters_summary.len() + chapter.title.len() + chapter.summary.len(),
     };
 
-    stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
+    crate::ai::tasks::service::AiTaskService::execute(
+        &app,
+        runtime.as_ref(),
+        request,
+        &session_id,
+        &log_ctx,
+    )
+    .await?;
 
     Ok(session_id)
 }
@@ -909,6 +867,8 @@ pub async fn chapter_aftercare(
     }
 
     let preset = get_preset(&state, preset_id)?;
+
+    let runtime_config = crate::commands::settings::get_runtime_config(&state);
     drop(state);
 
     let builder = ContextBuilder::new();
@@ -919,19 +879,29 @@ pub async fn chapter_aftercare(
         &chapter.summary,
         &content_text,
     );
-
-    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
+    let request = crate::ai::tasks::request_builder::build_request(
+        crate::ai::tasks::task_type::AFTERCARE,
+        messages,
+    );
+    let runtime = crate::ai::runtime::AiRuntimeManager::create(&runtime_config, &preset);
 
     let log_ctx = GenerationLogContext {
         project_id: Some(project_id),
         target_type: "aftercare".to_string(),
         target_id: Some(chapter_id),
-        command: "chapter_aftercare".to_string(),
+        command: crate::ai::tasks::task_type::CMD_AFTERCARE.to_string(),
         model_name: preset.model_name,
         input_chars: content_text.len() + outline_content.len() + characters_summary.len(),
     };
 
-    stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
+    crate::ai::tasks::service::AiTaskService::execute(
+        &app,
+        runtime.as_ref(),
+        request,
+        &session_id,
+        &log_ctx,
+    )
+    .await?;
 
     Ok(session_id)
 }
@@ -947,23 +917,35 @@ pub async fn analyze_text(
     state: State<'_, DbState>,
 ) -> Result<String, String> {
     let preset = get_preset(&state, preset_id)?;
+
+    let runtime_config = crate::commands::settings::get_runtime_config(&state);
     drop(state);
 
     let builder = ContextBuilder::new();
     let messages = builder.build_analyze_context(&content);
-
-    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
+    let request = crate::ai::tasks::request_builder::build_request(
+        crate::ai::tasks::task_type::KNOWLEDGE,
+        messages,
+    );
+    let runtime = crate::ai::runtime::AiRuntimeManager::create(&runtime_config, &preset);
 
     let log_ctx = GenerationLogContext {
         project_id: Some(project_id),
         target_type: "knowledge".to_string(),
         target_id: None,
-        command: "analyze_text".to_string(),
+        command: crate::ai::tasks::task_type::CMD_ANALYZE_TEXT.to_string(),
         model_name: preset.model_name,
         input_chars: content.len(),
     };
 
-    stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
+    crate::ai::tasks::service::AiTaskService::execute(
+        &app,
+        runtime.as_ref(),
+        request,
+        &session_id,
+        &log_ctx,
+    )
+    .await?;
 
     Ok(session_id)
 }
@@ -979,23 +961,35 @@ pub async fn extract_style_rules(
     state: State<'_, DbState>,
 ) -> Result<String, String> {
     let preset = get_preset(&state, preset_id)?;
+
+    let runtime_config = crate::commands::settings::get_runtime_config(&state);
     drop(state);
 
     let builder = ContextBuilder::new();
     let messages = builder.build_extract_rules_context(&content);
-
-    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
+    let request = crate::ai::tasks::request_builder::build_request(
+        crate::ai::tasks::task_type::STYLE_RULES,
+        messages,
+    );
+    let runtime = crate::ai::runtime::AiRuntimeManager::create(&runtime_config, &preset);
 
     let log_ctx = GenerationLogContext {
         project_id: Some(project_id),
         target_type: "style_rules".to_string(),
         target_id: None,
-        command: "extract_style_rules".to_string(),
+        command: crate::ai::tasks::task_type::CMD_EXTRACT_RULES.to_string(),
         model_name: preset.model_name,
         input_chars: content.len(),
     };
 
-    stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
+    crate::ai::tasks::service::AiTaskService::execute(
+        &app,
+        runtime.as_ref(),
+        request,
+        &session_id,
+        &log_ctx,
+    )
+    .await?;
 
     Ok(session_id)
 }
@@ -1012,27 +1006,41 @@ pub async fn generate_character_from_description(
 ) -> Result<String, String> {
     let outline_content = get_outline_content(&state, project_id)?;
     let preset = get_preset(&state, preset_id)?;
+
+    let runtime_config = crate::commands::settings::get_runtime_config(&state);
     drop(state);
 
     let builder = ContextBuilder::new();
     let messages = builder.build_character_from_description_context(&outline_content, &description, &tier);
-    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
+    let request = crate::ai::tasks::request_builder::build_request(
+        crate::ai::tasks::task_type::CHARACTERS,
+        messages,
+    );
+    let runtime = crate::ai::runtime::AiRuntimeManager::create(&runtime_config, &preset);
 
     let log_ctx = GenerationLogContext {
         project_id: Some(project_id),
         target_type: "characters".to_string(),
         target_id: None,
-        command: "generate_character_from_description".to_string(),
+        command: crate::ai::tasks::task_type::CMD_GENERATE_CHARACTER_FROM_DESC.to_string(),
         model_name: preset.model_name,
         input_chars: description.len() + outline_content.len(),
     };
 
-    let content = stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
+    let content = crate::ai::tasks::service::AiTaskService::execute_without_done(
+        &app,
+        runtime.as_ref(),
+        request,
+        &session_id,
+        &log_ctx,
+    )
+    .await?;
 
     // Parse JSON and insert character into database
     let db_state = app.state::<DbState>();
     let count = save_generated_characters(&db_state, project_id, &content)?;
     eprintln!("[generate_character_from_description] saved {} character(s)", count);
+    crate::ai::events::emit_done(&app, &session_id);
 
     Ok(session_id)
 }
@@ -1055,6 +1063,8 @@ pub async fn polish_content(
 
     // Phase 5.2: Inject enabled style rules
     let style_rules_summary = crate::commands::style_rules::get_enabled_rules_summary(&state, project_id).unwrap_or_default();
+
+    let runtime_config = crate::commands::settings::get_runtime_config(&state);
     drop(state);
 
     let builder = ContextBuilder::new();
@@ -1067,18 +1077,29 @@ pub async fn polish_content(
         style_config.as_ref(),
         &style_rules_summary,
     );
-    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
+    let request = crate::ai::tasks::request_builder::build_request(
+        crate::ai::tasks::task_type::POLISH,
+        messages,
+    );
+    let runtime = crate::ai::runtime::AiRuntimeManager::create(&runtime_config, &preset);
 
     let log_ctx = GenerationLogContext {
         project_id: Some(project_id),
         target_type: "content".to_string(),
         target_id: Some(chapter_id),
-        command: "polish_content".to_string(),
+        command: crate::ai::tasks::task_type::CMD_POLISH_CONTENT.to_string(),
         model_name: preset.model_name,
         input_chars: original_content.len(),
     };
 
-    stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
+    crate::ai::tasks::service::AiTaskService::execute(
+        &app,
+        runtime.as_ref(),
+        request,
+        &session_id,
+        &log_ctx,
+    )
+    .await?;
 
     Ok(session_id)
 }
@@ -1116,26 +1137,39 @@ pub async fn polish_chapter(
         .join("\n");
 
     let preset = get_preset_from_app(&app, preset_id)?;
+    let runtime_config = crate::commands::settings::get_runtime_config_from_app(&app);
 
     let builder = ContextBuilder::new();
     let messages = builder.build_polish_chapter_context(&outline_content, &characters_summary, &original_chapters);
-    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
+    let request = crate::ai::tasks::request_builder::build_request(
+        crate::ai::tasks::task_type::POLISH,
+        messages,
+    );
+    let runtime = crate::ai::runtime::AiRuntimeManager::create(&runtime_config, &preset);
 
     let log_ctx = GenerationLogContext {
         project_id: Some(project_id),
         target_type: "chapters".to_string(),
         target_id: None,
-        command: "polish_chapter".to_string(),
+        command: crate::ai::tasks::task_type::CMD_POLISH_CHAPTER.to_string(),
         model_name: preset.model_name,
         input_chars: original_chapters.len(),
     };
 
-    let content = stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
+    let content = crate::ai::tasks::service::AiTaskService::execute_without_done(
+        &app,
+        runtime.as_ref(),
+        request,
+        &session_id,
+        &log_ctx,
+    )
+    .await?;
 
     // Parse JSON and update chapters in database
     let db_state = app.state::<DbState>();
     let count = update_polished_chapters(&db_state, project_id, &content)?;
     eprintln!("[polish_chapter] updated {} chapters", count);
+    crate::ai::events::emit_done(&app, &session_id);
 
     Ok(session_id)
 }
@@ -1165,22 +1199,35 @@ pub async fn generate_idea_directions(
     state: State<'_, DbState>,
 ) -> Result<String, String> {
     let preset = get_preset(&state, preset_id)?;
+
+    let runtime_config = crate::commands::settings::get_runtime_config(&state);
     drop(state);
 
     let builder = ContextBuilder::new();
     let messages = builder.build_idea_directions_context(&idea);
-    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
+    let request = crate::ai::tasks::request_builder::build_request(
+        crate::ai::tasks::task_type::IDEA,
+        messages,
+    );
+    let runtime = crate::ai::runtime::AiRuntimeManager::create(&runtime_config, &preset);
 
     let log_ctx = GenerationLogContext {
         project_id: None, // 临时项目，不属于任何项目
         target_type: "idea".to_string(),
         target_id: None,
-        command: "generate_idea_directions".to_string(),
+        command: crate::ai::tasks::task_type::CMD_GENERATE_IDEA_DIRECTIONS.to_string(),
         model_name: preset.model_name,
         input_chars: idea.len(),
     };
 
-    let content = stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
+    let content = crate::ai::tasks::service::AiTaskService::execute(
+        &app,
+        runtime.as_ref(),
+        request,
+        &session_id,
+        &log_ctx,
+    )
+    .await?;
 
     // Parse JSON to validate and return structured directions
     let cleaned = strip_thinking_tags(&content);
@@ -1207,22 +1254,35 @@ pub async fn generate_outline_from_direction(
     state: State<'_, DbState>,
 ) -> Result<String, String> {
     let preset = get_preset(&state, preset_id)?;
+
+    let runtime_config = crate::commands::settings::get_runtime_config(&state);
     drop(state);
 
     let builder = ContextBuilder::new();
     let messages = builder.build_outline_from_direction_context(&direction_json);
-    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
+    let request = crate::ai::tasks::request_builder::build_request(
+        crate::ai::tasks::task_type::OUTLINE,
+        messages,
+    );
+    let runtime = crate::ai::runtime::AiRuntimeManager::create(&runtime_config, &preset);
 
     let log_ctx = GenerationLogContext {
         project_id: Some(project_id),
         target_type: "outline".to_string(),
         target_id: None,
-        command: "generate_outline_from_direction".to_string(),
+        command: crate::ai::tasks::task_type::CMD_GENERATE_OUTLINE_FROM_DIRECTION.to_string(),
         model_name: preset.model_name,
         input_chars: direction_json.len(),
     };
 
-    stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
+    crate::ai::tasks::service::AiTaskService::execute(
+        &app,
+        runtime.as_ref(),
+        request,
+        &session_id,
+        &log_ctx,
+    )
+    .await?;
 
     Ok(session_id)
 }
@@ -1265,6 +1325,8 @@ pub async fn review_chapter_content(
 
     // Phase 5.2: Inject enabled style rules
     let style_rules_summary = crate::commands::style_rules::get_enabled_rules_summary(&state, project_id).unwrap_or_default();
+
+    let runtime_config = crate::commands::settings::get_runtime_config(&state);
     drop(state);
 
     let builder = ContextBuilder::new();
@@ -1279,18 +1341,29 @@ pub async fn review_chapter_content(
         profile.as_ref(),
         &style_rules_summary,
     );
-    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
+    let request = crate::ai::tasks::request_builder::build_request(
+        crate::ai::tasks::task_type::REVIEW,
+        messages,
+    );
+    let runtime = crate::ai::runtime::AiRuntimeManager::create(&runtime_config, &preset);
 
     let log_ctx = GenerationLogContext {
         project_id: Some(project_id),
         target_type: "content".to_string(),
         target_id: Some(chapter_id),
-        command: "review_chapter_content".to_string(),
+        command: crate::ai::tasks::task_type::CMD_REVIEW_CHAPTER.to_string(),
         model_name: preset.model_name.clone(),
         input_chars: content.len() + outline_content.len() + characters_summary.len(),
     };
 
-    let raw_content = stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
+    let raw_content = crate::ai::tasks::service::AiTaskService::execute(
+        &app,
+        runtime.as_ref(),
+        request,
+        &session_id,
+        &log_ctx,
+    )
+    .await?;
 
     // Parse JSON and save review to database
     let cleaned = strip_thinking_tags(&raw_content);
@@ -1355,6 +1428,8 @@ pub async fn repair_chapter_content(
     // Phase 5.2: Inject enabled style rules
     let style_rules_summary = crate::commands::style_rules::get_enabled_rules_summary(&state, project_id).unwrap_or_default();
     let preset = resolve_preset(&state, preset_id, "review")?;
+
+    let runtime_config = crate::commands::settings::get_runtime_config(&state);
     drop(state);
 
     let (issues_json, suggestions) = latest_review
@@ -1374,13 +1449,17 @@ pub async fn repair_chapter_content(
         profile.as_ref(),
         &style_rules_summary,
     );
-    let client = AiClient::new(preset.api_base, preset.api_key, preset.model_name.clone());
+    let request = crate::ai::tasks::request_builder::build_request(
+        crate::ai::tasks::task_type::REVIEW,
+        messages,
+    );
+    let runtime = crate::ai::runtime::AiRuntimeManager::create(&runtime_config, &preset);
 
     // Capture input_chars before original_content is moved into snapshot
     let input_chars = original_content.len() + issues_json.len();
 
     // Create a snapshot of the original content BEFORE repair
-    // (must happen before stream_and_emit to guarantee snapshot exists before any overwrite)
+    // (must happen before AI execution to guarantee snapshot exists before any overwrite)
     let db_state = app.state::<DbState>();
     let _ = crate::commands::snapshots::create_snapshot(
         project_id,
@@ -1395,12 +1474,19 @@ pub async fn repair_chapter_content(
         project_id: Some(project_id),
         target_type: "content".to_string(),
         target_id: Some(chapter_id),
-        command: "repair_chapter_content".to_string(),
+        command: crate::ai::tasks::task_type::CMD_REPAIR_CHAPTER.to_string(),
         model_name: preset.model_name,
         input_chars,
     };
 
-    stream_and_emit(&client, messages, &app, &session_id, &log_ctx).await?;
+    crate::ai::tasks::service::AiTaskService::execute(
+        &app,
+        runtime.as_ref(),
+        request,
+        &session_id,
+        &log_ctx,
+    )
+    .await?;
 
     Ok(session_id)
 }
@@ -1513,5 +1599,15 @@ mod tests {
         assert!(context.contains("主角拿到半张船票"));
         assert!(context.contains("下一章《夜访仓库》"));
         assert!(context.contains("潜入仓库"));
+    }
+
+    #[test]
+    fn parse_chapters_json_retries_after_raw_control_character() {
+        let json = "{\n  \"chapters\": [\n    {\n      \"chapter_number\": 1,\n      \"title\": \"夜访仓库\",\n      \"summary\": \"主角潜入仓库\n发现隐藏账本\"\n    }\n  ]\n}";
+
+        let parsed: ChaptersResponse = parse_json_response(json, "章节").unwrap();
+
+        assert_eq!(parsed.chapters.len(), 1);
+        assert_eq!(parsed.chapters[0].summary, "主角潜入仓库发现隐藏账本");
     }
 }

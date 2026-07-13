@@ -326,6 +326,28 @@ CREATE INDEX IF NOT EXISTS idx_jobs_project
 ON jobs(project_id, created_at);
 ";
 
+const MIGRATION_008: &str = "
+CREATE TABLE IF NOT EXISTS tool_call_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER,
+  session_id TEXT DEFAULT '',
+  tool_name TEXT NOT NULL,
+  arguments_json TEXT DEFAULT '{}',
+  result_json TEXT DEFAULT '{}',
+  success INTEGER DEFAULT 1,
+  error TEXT DEFAULT '',
+  skill_name TEXT DEFAULT '',
+  call_type TEXT DEFAULT 'tool',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_tool_call_logs_project
+ON tool_call_logs(project_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_tool_call_logs_session
+ON tool_call_logs(session_id);
+";
+
 /// Run all migrations on the database
 pub fn run(conn: &Connection) -> SqlResult<()> {
     conn.execute_batch(MIGRATION_001)?;
@@ -336,5 +358,6 @@ pub fn run(conn: &Connection) -> SqlResult<()> {
     conn.execute_batch(MIGRATION_005)?;
     conn.execute_batch(MIGRATION_006)?;
     conn.execute_batch(MIGRATION_007)?;
+    conn.execute_batch(MIGRATION_008)?;
     Ok(())
 }

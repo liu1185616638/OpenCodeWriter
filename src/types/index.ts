@@ -280,3 +280,58 @@ export interface Job {
   created_at: string;
   updated_at: string;
 }
+
+// Phase 8: Runtime Tools & Skills
+
+export interface RuntimeToolInfo {
+  name: string;
+  description: string;
+  permission: string;
+  parameters_schema: Record<string, unknown>;
+}
+
+export interface RuntimeSkillInfo {
+  name: string;
+  description: string;
+  task_type: string;
+  command: string;
+  required_tools: string[];
+  writes_data: boolean;
+}
+
+export interface McpServerConfig {
+  name: string;
+  command: string;
+  args: string;
+  enabled: boolean;
+  allowed_tools: string[];
+  require_approval: boolean;
+}
+
+export interface McpToolInfo {
+  server_name: string;
+  tool_name: string;
+  enabled: boolean;
+  requires_approval: boolean;
+}
+
+export interface McpApprovalRequest {
+  project_id?: number | null;
+  session_id: string;
+  server_name: string;
+  tool_name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface McpCallLog {
+  id: number;
+  project_id: number | null;
+  session_id: string;
+  tool_name: string;
+  arguments_json: string;
+  result_json: string;
+  success: boolean;
+  error: string;
+  call_type: string;
+  created_at: string;
+}
