@@ -62,7 +62,6 @@ pub fn list_task_center_items(
     let limit_val = limit.unwrap_or(50);
     let filter_val = filter.unwrap_or_else(|| "all".to_string());
 
-    // Build status filter condition
     let status_filter = match filter_val.as_str() {
         "running" => " AND status IN ('started', 'running', 'pending')",
         "failed" => " AND status IN ('failed', 'timeout', 'cancelled')",
@@ -70,7 +69,6 @@ pub fn list_task_center_items(
         _ => "",
     };
 
-    // Query generation_logs
     let mut items = Vec::new();
 
     let gen_sql = format!(
@@ -88,7 +86,6 @@ pub fn list_task_center_items(
         items.push(row.map_err(|e| e.to_string())?);
     }
 
-    // Query jobs (map job statuses to match filter)
     let job_status_filter = match filter_val.as_str() {
         "running" => " AND status IN ('running', 'pending')",
         "failed" => " AND status = 'failed'",
@@ -111,7 +108,6 @@ pub fn list_task_center_items(
         items.push(row.map_err(|e| e.to_string())?);
     }
 
-    // Sort by created_at DESC and limit
     items.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     items.truncate(limit_val as usize);
 
@@ -121,7 +117,7 @@ pub fn list_task_center_items(
 /// Cancel an AI session by session_id.
 /// 1. Signal the cancellation flag so the Runtime loop can stop
 /// 2. Update the generation_log status to 'cancelled'
-/// 3. Emit an ai-error event so the frontend listener can clean up
+/// 3. Emit a dedicated ai-cancelled terminal event
 /// 4. Return the session_id for confirmation
 #[tauri::command]
 pub async fn cancel_ai_session(
@@ -129,11 +125,9 @@ pub async fn cancel_ai_session(
     app: AppHandle,
     state: State<'_, DbState>,
 ) -> Result<String, String> {
-    // Signal the cancellation flag to the running Runtime loop
     let registry = app.state::<AiSessionRegistry>();
     registry.cancel(&session_id);
 
-    // Update generation log status (conditional — only if still 'started')
     {
         let conn = get_conn(&state)?;
         conn.execute(
@@ -142,8 +136,7 @@ pub async fn cancel_ai_session(
         ).map_err(|e| e.to_string())?;
     }
 
-    // Emit error event so frontend listener can clean up
-    events::emit_error(&app, &session_id, "用户取消了生成任务");
+    events::emit_cancelled(&app, &session_id);
 
     Ok(session_id)
 }
