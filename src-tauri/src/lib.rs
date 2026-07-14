@@ -134,6 +134,7 @@ pub fn run() {
             commands::jobs::list_jobs,
             commands::jobs::create_job,
             commands::jobs::update_job_status,
+            commands::jobs::cancel_job,
             commands::jobs::delete_job,
             // Runtime Tools & Skills (Phase 8)
             commands::runtime_tools::list_runtime_tools,
@@ -144,14 +145,14 @@ pub fn run() {
             commands::runtime_tools::list_mcp_tools,
             commands::runtime_tools::approve_mcp_call,
             commands::runtime_tools::deny_mcp_call,
-                        commands::runtime_tools::list_mcp_call_logs,
+            commands::runtime_tools::list_mcp_call_logs,
             // Workbench Queries (Phase C)
             commands::workbench_queries::list_project_summaries,
             commands::workbench_queries::test_model_connection,
             commands::workbench_queries::complete_setup,
             commands::workbench_queries::touch_project_opened,
             commands::workbench_queries::preview_profile_change_impact,
-commands::workbench_queries::get_app_data_dir,
+            commands::workbench_queries::get_app_data_dir,
             // Task Center (Phase F)
             commands::task_center::list_task_center_items,
             commands::task_center::cancel_ai_session,
