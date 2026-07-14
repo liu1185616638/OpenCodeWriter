@@ -1,8 +1,23 @@
-import { useState, useEffect, useCallback } from "react";
+import {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useCallback,
+  type ReactNode,
+} from "react";
 
 type Theme = "light" | "dark";
 
-export function useTheme() {
+interface ThemeContextValue {
+  theme: Theme;
+  toggle: () => void;
+  set: (t: Theme) => void;
+}
+
+const ThemeContext = createContext<ThemeContextValue | null>(null);
+
+export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setTheme] = useState<Theme>(() => {
     const saved = localStorage.getItem("theme");
     if (saved === "light" || saved === "dark") return saved;
@@ -24,5 +39,15 @@ export function useTheme() {
     setTheme(t);
   }, []);
 
-  return { theme, toggle, set };
+  return (
+    <ThemeContext.Provider value={{ theme, toggle, set }}>
+      {children}
+    </ThemeContext.Provider>
+  );
+}
+
+export function useTheme() {
+  const ctx = useContext(ThemeContext);
+  if (!ctx) throw new Error("useTheme must be used within ThemeProvider");
+  return ctx;
 }

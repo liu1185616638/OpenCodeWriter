@@ -9,6 +9,7 @@
 import { type ReactNode } from "react";
 import { PanelLeftOpen, ChevronLeft, Command } from "lucide-react";
 import { useWorkbench } from "@/app/WorkbenchContext";
+import { WindowControls } from "./WindowControls";
 
 interface TopTaskbarProps {
   title: string;
@@ -39,6 +40,7 @@ export function TopTaskbar({
         backgroundColor: "var(--surface)",
         borderColor: "var(--border)",
       }}
+      data-tauri-drag-region
     >
       {/* Left: nav toggle + title + save status */}
       <div className="flex items-center gap-2 min-w-0" style={{ padding: "0 18px" }}>
@@ -108,46 +110,49 @@ export function TopTaskbar({
         </div>
       </div>
 
-      {/* Right: actions */}
-      <div className="flex items-center gap-2 shrink-0" style={{ padding: "0 18px" }}>
-        {actions}
-        {/* Command palette trigger */}
-        <button
-          className="flex items-center gap-1.5 rounded-md border transition-colors"
-          style={{
-            height: 30,
-            padding: "0 8px",
-            fontSize: 12,
-            color: "var(--text-muted)",
-            borderColor: "var(--border)",
-            backgroundColor: "var(--surface)",
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--surface-hover)")}
-          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "var(--surface)")}
-          title="命令面板 (Ctrl+K)"
-        >
-          <Command style={{ width: 12, height: 12 }} />
-          <span style={{ fontSize: 11 }}>⌘K</span>
-        </button>
-        {/* Focus mode toggle */}
-        <button
-          onClick={toggleFocusMode}
-          className="flex items-center justify-center rounded-md transition-colors"
-          style={{
-            width: 30, height: 30,
-            color: focusMode ? "var(--accent)" : "var(--text-muted)",
-          }}
-          aria-label={focusMode ? "退出专注模式" : "进入专注模式"}
-          title={focusMode ? "退出专注模式" : "进入专注模式"}
-          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--surface-hover)")}
-          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-        >
-          {focusMode ? (
-            <span style={{ fontSize: 11, fontWeight: 600 }}>退出</span>
-          ) : (
-            <span style={{ fontSize: 11, fontWeight: 500 }}>专注</span>
-          )}
-        </button>
+      {/* Right: actions + window controls */}
+      <div className="flex items-center gap-2 shrink-0" style={{ padding: "0 0 0 18px" }} data-tauri-drag-region>
+        <div className="flex items-center gap-2" style={{ pointerEvents: "auto" }}>
+          {actions}
+          {/* Command palette trigger */}
+          <button
+            className="flex items-center gap-1.5 rounded-md border transition-colors"
+            style={{
+              height: 30,
+              padding: "0 8px",
+              fontSize: 12,
+              color: "var(--text-muted)",
+              borderColor: "var(--border)",
+              backgroundColor: "var(--surface)",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--surface-hover)")}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "var(--surface)")}
+            title="命令面板 (Ctrl+K)"
+          >
+            <Command style={{ width: 12, height: 12 }} />
+            <span style={{ fontSize: 11 }}>⌘K</span>
+          </button>
+          {/* Focus mode toggle */}
+          <button
+            onClick={toggleFocusMode}
+            className="flex items-center justify-center rounded-md transition-colors"
+            style={{
+              width: 30, height: 30,
+              color: focusMode ? "var(--accent)" : "var(--text-muted)",
+            }}
+            aria-label={focusMode ? "退出专注模式" : "进入专注模式"}
+            title={focusMode ? "退出专注模式" : "进入专注模式"}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--surface-hover)")}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+          >
+            {focusMode ? (
+              <span style={{ fontSize: 11, fontWeight: 600 }}>退出</span>
+            ) : (
+              <span style={{ fontSize: 11, fontWeight: 500 }}>专注</span>
+            )}
+          </button>
+        </div>
+        <WindowControls />
       </div>
     </div>
   );

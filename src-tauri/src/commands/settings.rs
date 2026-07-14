@@ -26,9 +26,11 @@ struct ModelData {
 pub async fn fetch_models(api_base: String, api_key: String) -> Result<Vec<ModelInfo>, String> {
     let url = format!("{}/models", api_base.trim_end_matches('/'));
     let client = reqwest::Client::new();
-    let response = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", api_key))
+    let mut request = client.get(&url);
+    if !api_key.trim().is_empty() {
+        request = request.header("Authorization", format!("Bearer {}", api_key));
+    }
+    let response = request
         .send()
         .await
         .map_err(|e| format!("请求失败: {}", e))?;

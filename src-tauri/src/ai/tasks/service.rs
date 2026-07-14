@@ -1,8 +1,10 @@
 use crate::ai::events;
 use crate::ai::runtime::types::{AiDeltaType, AiRequest, AiRuntime};
+use crate::ai::session_registry::AiSessionRegistry;
 use crate::db::{get_conn, DbState};
 use futures::StreamExt;
 use rusqlite::params;
+use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Manager};
 use tokio::time::{timeout, Duration};
 
@@ -51,7 +53,7 @@ pub fn finish_generation_log(app: &AppHandle, log_id: i64, status: &str, error: 
         Err(_) => return,
     };
     let _ = conn.execute(
-        "UPDATE generation_logs SET status = ?1, error = ?2, output_chars = ?3, ended_at = datetime('now') WHERE id = ?4",
+        "UPDATE generation_logs SET status = ?1, error = ?2, output_chars = ?3, ended_at = datetime('now') WHERE id = ?4 AND status = 'started'",
         params![status, error, output_chars as i64, log_id],
     );
 }
@@ -237,12 +239,25 @@ impl AiTaskService {
         emit_done: bool,
     ) -> Result<String, String> {
         let log_id = insert_generation_log(app, log_ctx);
+
+        // Register session for cancellation support
+        let registry = app.state::<AiSessionRegistry>();
+        let cancel_flag = registry.register(session_id);
+
         let mut stream = runtime.run(request).await?;
 
         let mut full_content = String::new();
         let mut inside_thinking = false;
 
         loop {
+            // Check cancellation before processing next delta
+            if cancel_flag.load(Ordering::SeqCst) {
+                finish_generation_log(app, log_id, "cancelled", "用户取消", full_content.len());
+                // Don't emit ai-done; cancel_ai_session already emitted ai-error
+                registry.unregister(session_id);
+                return Err("cancelled".to_string());
+            }
+
             let next_result = match timeout(GENERATION_TIMEOUT, stream.next()).await {
                 Ok(Some(result)) => result,
                 Ok(None) => break, // stream ended normally
@@ -250,6 +265,7 @@ impl AiTaskService {
                     let msg = "生成超时（超过 5 分钟无响应），请检查模型配置或网络连接";
                     finish_generation_log(app, log_id, "timeout", msg, full_content.len());
                     events::emit_error(app, session_id, msg);
+                    registry.unregister(session_id);
                     return Err(msg.to_string());
                 }
             };
@@ -279,6 +295,7 @@ impl AiTaskService {
                                 full_content.len(),
                             );
                             events::emit_error(app, session_id, &delta.text);
+                            registry.unregister(session_id);
                             return Err(delta.text);
                         }
                         AiDeltaType::Done => {
@@ -360,12 +377,14 @@ impl AiTaskService {
                 Err(e) => {
                     finish_generation_log(app, log_id, "failed", &e, full_content.len());
                     events::emit_error(app, session_id, &e);
+                    registry.unregister(session_id);
                     return Err(e);
                 }
             }
         }
 
         finish_generation_log(app, log_id, "success", "", full_content.len());
+        registry.unregister(session_id);
         if emit_done {
             events::emit_done(app, session_id);
         }

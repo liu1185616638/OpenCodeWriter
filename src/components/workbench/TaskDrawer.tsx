@@ -6,12 +6,12 @@
  * 匹配 Pencil 设计中的 Task Drawer / Running。
  */
 
-import { type ReactNode, useState, useEffect, useCallback } from "react";
+import { type ReactNode, useState, useEffect, useCallback, useRef } from "react";
 import {
   ChevronDown, ChevronUp, Loader2,
   CheckCircle2, XCircle, AlertTriangle,
   Brain, FileText, Wrench, Sparkles,
-  Plug, Ban, Clock,
+  Plug, Ban, Clock, GripHorizontal,
 } from "lucide-react";
 import { useWorkbench } from "@/app/WorkbenchContext";
 import { useAI } from "@/contexts/AIContext";
@@ -21,7 +21,7 @@ import type { AiTimelineEvent, TaskCenterItem } from "@/types";
 type DrawerTab = "timeline" | "history";
 
 export function TaskDrawer({ projectId }: { projectId?: number }) {
-  const { taskDrawerOpen, toggleTaskDrawer } = useWorkbench();
+  const { taskDrawerOpen, toggleTaskDrawer, taskDrawerHeight, setTaskDrawerHeight } = useWorkbench();
   const { generatingStage, generating: isGenerating, timelineEvents, cancel, generationStatus, error } = useAI();
   const [activeTab, setActiveTab] = useState<DrawerTab>("timeline");
   const [historyItems, setHistoryItems] = useState<TaskCenterItem[]>([]);
@@ -29,7 +29,41 @@ export function TaskDrawer({ projectId }: { projectId?: number }) {
 
   const hasRunning = isGenerating || !!generatingStage;
   const collapsedHeight = 32;
-  const expandedHeight = Math.max(120, Math.min(600, 240));
+
+  // Drag-to-resize handlers
+  const dragStartY = useRef(0);
+  const dragStartHeight = useRef(0);
+  const draggingRef = useRef(false);
+
+  const handleDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    draggingRef.current = true;
+    dragStartY.current = e.clientY;
+    dragStartHeight.current = taskDrawerHeight;
+    document.body.style.cursor = "ns-resize";
+    document.body.style.userSelect = "none";
+  }, [taskDrawerHeight]);
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!draggingRef.current) return;
+      const delta = dragStartY.current - e.clientY;
+      setTaskDrawerHeight(dragStartHeight.current + delta);
+    };
+    const handleMouseUp = () => {
+      if (draggingRef.current) {
+        draggingRef.current = false;
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      }
+    };
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [setTaskDrawerHeight]);
 
   // Load task center history items
   const loadHistory = useCallback(async () => {
@@ -103,11 +137,19 @@ export function TaskDrawer({ projectId }: { projectId?: number }) {
     <div
       className="flex flex-col shrink-0 border-t"
       style={{
-        height: expandedHeight,
+        height: taskDrawerHeight,
         backgroundColor: "var(--surface-raised)",
         borderColor: "var(--border-strong)",
       }}
     >
+      {/* Drag handle for resizing */}
+      <div
+        className="flex items-center justify-center shrink-0 cursor-ns-resize select-none"
+        style={{ height: 4, backgroundColor: "var(--surface-raised)" }}
+        onMouseDown={handleDragStart}
+      >
+        <GripHorizontal style={{ width: 14, height: 4, color: "var(--text-muted)" }} />
+      </div>
       {/* Header with tabs */}
       <div
         className="flex items-center justify-between shrink-0 border-b"

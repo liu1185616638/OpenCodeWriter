@@ -9,14 +9,19 @@ import { useTheme } from "@/hooks/useTheme";
 import { getSetting } from "@/lib/tauri";
 import type { Project } from "@/types";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { Sun, Moon, Info } from "lucide-react";
 
 export function AboutPage({ currentProject: _currentProject }: { currentProject: Project | null }) {
   const { theme, set } = useTheme();
   const [dataDir, setDataDir] = useState<string>("");
   const [sdkAdapterStatus, setSdkAdapterStatus] = useState<string>("检测中...");
+  const [version, setVersion] = useState<string>("");
 
   useEffect(() => {
+    // Get app version from Tauri
+    getVersion().then(setVersion).catch(() => setVersion("0.1.0"));
+
     // Try to get app data directory
     invoke<string>("get_app_data_dir").then(setDataDir).catch(() => setDataDir("无法获取"));
 
@@ -42,7 +47,7 @@ export function AboutPage({ currentProject: _currentProject }: { currentProject:
         <CardContent className="py-6 space-y-3">
           <div>
             <p className="font-bold text-lg text-primary">OpenCodeWriter</p>
-            <p className="text-sm text-muted-foreground">版本 0.9.0</p>
+            <p className="text-sm text-muted-foreground">版本 {version || "..."}</p>
           </div>
           <div className="space-y-2 pt-2 border-t border-border">
             <InfoRow label="描述" value="AI 辅助长篇小说创作桌面工作台" />

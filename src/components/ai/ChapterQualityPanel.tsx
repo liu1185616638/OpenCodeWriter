@@ -87,7 +87,7 @@ export function ChapterQualityPanel({ projectId, chapterId, hasContent, currentC
   const [reviews, setReviews] = useState<ChapterReview[]>([]);
   const [repairDraft, setRepairDraft] = useState<string | null>(null);
   const [repairOriginal, setRepairOriginal] = useState<string>("");
-  const { generating, streamedContent, generatingStage, generate, cancel } = useAI();
+  const { generating, generatingStage, generate, cancel, lastCompletedStage, generationStatus } = useAI();
   const { currentPreset } = useSettings();
   const contentRef = useRef(currentContent);
   contentRef.current = currentContent;
@@ -111,18 +111,10 @@ export function ChapterQualityPanel({ projectId, chapterId, hasContent, currentC
 
   // Reload reviews when review generation completes
   useEffect(() => {
-    if (!generating && generatingStage === "review") {
+    if (!generating && lastCompletedStage === "review" && generationStatus === "completed") {
       loadReviews();
     }
-    // When repair completes, show diff preview instead of auto-saving
-    if (!generating && generatingStage === "repair" && streamedContent) {
-      const cleaned = stripThinking(streamedContent);
-      if (cleaned.trim()) {
-        setRepairOriginal(contentRef.current);
-        setRepairDraft(cleaned);
-      }
-    }
-  }, [generating, generatingStage, streamedContent, loadReviews]);
+  }, [generating, lastCompletedStage, generationStatus, loadReviews]);
 
   const handleReview = useCallback(async () => {
     if (!currentPreset || !chapterId) return;
@@ -155,8 +147,12 @@ export function ChapterQualityPanel({ projectId, chapterId, hasContent, currentC
         chapterId,
         presetId: currentPreset.id,
       },
-      onComplete: () => {
-        // Diff preview will be shown by the effect above
+      onComplete: (content) => {
+        const cleaned = stripThinking(content);
+        if (cleaned.trim()) {
+          setRepairOriginal(contentRef.current);
+          setRepairDraft(cleaned);
+        }
       },
       onError: (err) => {
         toast.error("修复失败", { description: err });

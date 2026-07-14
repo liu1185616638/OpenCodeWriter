@@ -4,12 +4,15 @@ mod models;
 mod ai;
 mod resources;
 
+use tauri::Manager;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             db::init_db(&app.handle())?;
+            app.manage(ai::session_registry::AiSessionRegistry::new());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -148,6 +151,7 @@ pub fn run() {
             commands::workbench_queries::complete_setup,
             commands::workbench_queries::touch_project_opened,
             commands::workbench_queries::preview_profile_change_impact,
+commands::workbench_queries::get_app_data_dir,
             // Task Center (Phase F)
             commands::task_center::list_task_center_items,
             commands::task_center::cancel_ai_session,

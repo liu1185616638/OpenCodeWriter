@@ -12,6 +12,7 @@ import { useOutline } from "@/hooks/useOutline";
 import { useSettings } from "@/hooks/useSettings";
 import { useAI } from "@/contexts/AIContext";
 import { useAppEvents } from "@/hooks/useAppEvents";
+import { useWorkbench } from "@/app/WorkbenchContext";
 import { getProjectProfile, getProjectProgress } from "@/lib/tauri";
 import { stripThinking } from "@/components/shared/StreamingView";
 import type { Project, ProjectProfile, ProjectProgress } from "@/types";
@@ -26,9 +27,11 @@ type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
 export function OutlineEditor({ project }: { project: Project }) {
   const { outline, loading, saving, load, save } = useOutline(project.id);
   const { currentPreset, currentPresetId, switchPreset, presets } = useSettings();
-  const { generating, streamedContent, thinkingContent, generatingStage, error, generate, cancel } = useAI();
+  const { generating, streamedContent, thinkingContent, generatingStage, error, generate, cancel, lastCompletedStage, generationStatus } = useAI();
+  const { focusMode } = useWorkbench();
 
   const [content, setContent] = useState("");
+  const contentRef = useRef("");
   const [draft, setDraft] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [profile, setProfile] = useState<ProjectProfile | null>(null);
@@ -42,6 +45,9 @@ export function OutlineEditor({ project }: { project: Project }) {
   useEffect(() => {
     if (outline) setContent(outline.content);
   }, [outline]);
+
+  // Keep ref in sync so doSave always saves the latest content
+  contentRef.current = content;
 
   // Load profile and progress for inspector
   useEffect(() => {
@@ -68,7 +74,7 @@ export function OutlineEditor({ project }: { project: Project }) {
   // When generation finishes, keep draft for user to apply/discard
   useEffect(() => {
     if (prevGeneratingRef.current && !generating) {
-      if (streamedContent && generatingStage === "outline") {
+      if (streamedContent && lastCompletedStage === "outline" && generationStatus === "completed") {
         const cleaned = stripThinking(streamedContent);
         setDraft(cleaned);
         toast.success("大纲草稿已生成", {
@@ -77,20 +83,20 @@ export function OutlineEditor({ project }: { project: Project }) {
       }
     }
     prevGeneratingRef.current = generating;
-  }, [generating, streamedContent, generatingStage]);
+  }, [generating, streamedContent, lastCompletedStage, generationStatus]);
 
   // Auto-save with debounce
   const doSave = useCallback(async () => {
     setSaveState("saving");
     try {
-      await save(content);
+      await save(contentRef.current);
       setSaveState("saved");
       setTimeout(() => setSaveState((s) => (s === "saved" ? "idle" : s)), 2000);
     } catch (e) {
       setSaveState("error");
       toast.error("保存失败", { description: String(e) });
     }
-  }, [save, content]);
+  }, [save]);
 
   const scheduleSave = useCallback(() => {
     setSaveState("dirty");
@@ -98,7 +104,16 @@ export function OutlineEditor({ project }: { project: Project }) {
     saveTimerRef.current = setTimeout(() => doSave(), 600);
   }, [doSave]);
 
-  useEffect(() => () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); }, []);
+  // Flush on unmount
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        // Best-effort flush
+        save(contentRef.current).catch(() => {});
+      }
+    };
+  }, [save]);
 
   // Apply draft: replace or append
   const applyDraft = useCallback((mode: "replace" | "append") => {
@@ -333,7 +348,8 @@ export function OutlineEditor({ project }: { project: Project }) {
         )}
       </div>
 
-      {/* Right Inspector */}
+      {/* Right Inspector — hidden in focus mode */}
+      {!focusMode && (
       <div
         className="shrink-0 border-l overflow-y-auto app-scrollbar"
         style={{
@@ -388,6 +404,7 @@ export function OutlineEditor({ project }: { project: Project }) {
           </InspectorSection>
         </div>
       </div>
+      )}
     </div>
   );
 }

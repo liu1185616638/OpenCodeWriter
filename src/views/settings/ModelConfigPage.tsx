@@ -16,6 +16,12 @@ import {
   Eye, EyeOff,
 } from "lucide-react";
 
+/** Local providers (Ollama, LM Studio, etc.) that don't require an API key */
+function isLocalProvider(apiBase: string): boolean {
+  const lower = apiBase.toLowerCase();
+  return lower.includes("localhost") || lower.includes("127.0.0.1") || lower.includes("0.0.0.0");
+}
+
 export function ModelConfigPage() {
   const { presets, addPreset, removePreset, editPreset } = useSettings();
   const [newName, setNewName] = useState("");
@@ -41,7 +47,7 @@ export function ModelConfigPage() {
   const [editError, setEditError] = useState<string | null>(null);
 
   const handleFetchModels = async (apiBase: string, apiKey: string, target: "new" | "edit") => {
-    if (!apiBase || !apiKey) {
+    if (!apiBase || (!apiKey && !isLocalProvider(apiBase))) {
       if (target === "new") setFetchError("请先填写 API 地址和 API Key");
       else setEditFetchError("请先填写 API 地址和 API Key");
       return;

@@ -19,6 +19,12 @@ import {
 
 type Step = 1 | 2 | 3 | 4; // 4 = success
 
+/** Local providers (Ollama, LM Studio, etc.) that don't require an API key */
+function isLocalProvider(apiBase: string): boolean {
+  const lower = apiBase.toLowerCase();
+  return lower.includes("localhost") || lower.includes("127.0.0.1") || lower.includes("0.0.0.0");
+}
+
 export function SetupWizard({ onComplete }: { onComplete: () => void }) {
   const [step, setStep] = useState<Step>(1);
   const [apiBase, setApiBase] = useState("https://api.openai.com/v1");
@@ -62,7 +68,7 @@ export function SetupWizard({ onComplete }: { onComplete: () => void }) {
     }
   };
 
-  const canTest = apiBase.trim() && apiKey.trim() && modelName.trim() && !testing;
+  const canTest = apiBase.trim() && (apiKey.trim() || isLocalProvider(apiBase)) && modelName.trim() && !testing;
   const canComplete = testResult != null && !completing;
 
   return (
@@ -464,7 +470,7 @@ export function SetupWizard({ onComplete }: { onComplete: () => void }) {
             {step < 3 && (
               <button
                 onClick={() => setStep((step + 1) as Step)}
-                disabled={step === 1 ? !apiBase.trim() : step === 2 ? !apiKey.trim() : !modelName.trim()}
+                disabled={step === 1 ? !apiBase.trim() : step === 2 ? (!apiKey.trim() && !isLocalProvider(apiBase)) : !modelName.trim()}
                 className="flex items-center gap-1 rounded-md transition-colors disabled:opacity-40"
                 style={{
                   height: 32,

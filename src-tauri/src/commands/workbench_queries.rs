@@ -1,6 +1,6 @@
 use rusqlite::params;
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 use crate::db::{DbState, get_conn};
 
@@ -118,11 +118,18 @@ pub async fn test_model_connection(api_base: String, api_key: String, model_name
         "stream": false,
     });
 
-    let response = client
+    let mut request = client
         .post(&url)
-        .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
-        .json(&body)
+        .json(&body);
+
+    // Only send Authorization header when api_key is non-empty
+    // (local providers like Ollama don't require it)
+    if !api_key.trim().is_empty() {
+        request = request.header("Authorization", format!("Bearer {}", api_key));
+    }
+
+    let response = request
         .send()
         .await
         .map_err(|e| format!("连接失败: {}", e))?;
@@ -264,4 +271,14 @@ pub fn preview_profile_change_impact(project_id: i64, state: State<'_, DbState>)
         content_stale,
         summary,
     })
+}
+
+/// Returns the app data directory path.
+#[tauri::command]
+pub fn get_app_data_dir(app: AppHandle) -> Result<String, String> {
+    let app_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    Ok(app_dir.to_string_lossy().to_string())
 }

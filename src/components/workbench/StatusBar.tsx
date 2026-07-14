@@ -5,6 +5,9 @@
  * 匹配 Pencil 设计中的 Application Status Bar。
  */
 
+import { useEffect, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
+
 interface StatusBarProps {
   wordCount?: number;
   chapterCount?: number;
@@ -18,6 +21,12 @@ export function StatusBar({
   modelPresetName,
   connected,
 }: StatusBarProps) {
+  const [version, setVersion] = useState("");
+
+  useEffect(() => {
+    getVersion().then(setVersion).catch(() => setVersion("0.1.0"));
+  }, []);
+
   return (
     <div
       className="flex items-center justify-between shrink-0 select-none"
@@ -38,7 +47,7 @@ export function StatusBar({
               backgroundColor: connected ? "var(--success)" : "var(--danger)",
             }}
           />
-          {connected ? "已连接" : "未连接"}
+          {connected ? "已配置" : "未配置"}
         </span>
         {modelPresetName && (
           <span style={{ color: "var(--text-muted)" }}>
@@ -59,9 +68,11 @@ export function StatusBar({
             {chapterCount} 章
           </span>
         )}
-        <span style={{ color: "var(--text-muted)" }}>
-          OpenCodeWriter v0.9.0
-        </span>
+        {version && (
+          <span style={{ color: "var(--text-muted)" }}>
+            OpenCodeWriter v{version}
+          </span>
+        )}
       </div>
     </div>
   );

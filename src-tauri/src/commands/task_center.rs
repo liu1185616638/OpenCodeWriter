@@ -1,8 +1,9 @@
 use crate::ai::events;
+use crate::ai::session_registry::AiSessionRegistry;
 use crate::db::{DbState, get_conn};
 use rusqlite::params;
 use serde::Serialize;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, State, Manager};
 
 /// Unified task center item — aggregates jobs, generation_logs, and snapshots
 /// into a single timeline for the task drawer and task center page.
@@ -118,16 +119,21 @@ pub fn list_task_center_items(
 }
 
 /// Cancel an AI session by session_id.
-/// 1. Update the generation_log status to 'cancelled'
-/// 2. Emit an ai-error event so the frontend listener can clean up
-/// 3. Return the session_id for confirmation
+/// 1. Signal the cancellation flag so the Runtime loop can stop
+/// 2. Update the generation_log status to 'cancelled'
+/// 3. Emit an ai-error event so the frontend listener can clean up
+/// 4. Return the session_id for confirmation
 #[tauri::command]
 pub async fn cancel_ai_session(
     session_id: String,
     app: AppHandle,
     state: State<'_, DbState>,
 ) -> Result<String, String> {
-    // Update generation log status
+    // Signal the cancellation flag to the running Runtime loop
+    let registry = app.state::<AiSessionRegistry>();
+    registry.cancel(&session_id);
+
+    // Update generation log status (conditional — only if still 'started')
     {
         let conn = get_conn(&state)?;
         conn.execute(

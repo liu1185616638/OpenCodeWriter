@@ -1,8 +1,29 @@
-import { useState, useEffect, useCallback } from "react";
+import {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useCallback,
+  type ReactNode,
+} from "react";
 import { getSetting, setSetting, listModelPresets, createModelPreset, deleteModelPreset, updateModelPreset } from "@/lib/tauri";
 import type { ModelPreset } from "@/types";
 
-export function useSettings() {
+interface SettingsContextValue {
+  presets: ModelPreset[];
+  currentPreset: ModelPreset | undefined;
+  currentPresetId: number | null;
+  loading: boolean;
+  switchPreset: (presetId: number) => Promise<void>;
+  addPreset: (name: string, apiBase: string, apiKey: string, modelName: string) => Promise<ModelPreset>;
+  removePreset: (id: number) => Promise<void>;
+  editPreset: (id: number, fields: Partial<Pick<ModelPreset, "name" | "api_base" | "api_key" | "model_name">>) => Promise<ModelPreset>;
+  refreshPresets: () => Promise<void>;
+}
+
+const SettingsContext = createContext<SettingsContextValue | null>(null);
+
+export function SettingsProvider({ children }: { children: ReactNode }) {
   const [presets, setPresets] = useState<ModelPreset[]>([]);
   const [currentPresetId, setCurrentPresetId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -47,7 +68,7 @@ export function useSettings() {
       setCurrentPresetId(null);
       await setSetting("current_preset_id", "");
     }
-  }, []);
+  }, [currentPresetId]);
 
   const editPreset = useCallback(async (id: number, fields: Partial<Pick<ModelPreset, "name" | "api_base" | "api_key" | "model_name">>) => {
     const updated = await updateModelPreset(id, fields);
@@ -57,5 +78,17 @@ export function useSettings() {
 
   const currentPreset = presets.find(p => p.id === currentPresetId);
 
-  return { presets, currentPreset, currentPresetId, loading, switchPreset, addPreset, removePreset, editPreset, refreshPresets };
+  return (
+    <SettingsContext.Provider
+      value={{ presets, currentPreset, currentPresetId, loading, switchPreset, addPreset, removePreset, editPreset, refreshPresets }}
+    >
+      {children}
+    </SettingsContext.Provider>
+  );
+}
+
+export function useSettings() {
+  const ctx = useContext(SettingsContext);
+  if (!ctx) throw new Error("useSettings must be used within SettingsProvider");
+  return ctx;
 }

@@ -54,6 +54,8 @@ interface AiContextValue {
   thinkingContent: string;
   error: string | null;
   generatingStage: string | undefined;
+  /** The stage that just completed (stays set until next generation starts) */
+  lastCompletedStage: string | undefined;
   generationStatus: GenerationStatus;
   generationMeta: GenerationTaskMeta | null;
   generatedCharCount: number;
@@ -72,6 +74,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const [thinkingContent, setThinkingContent] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [generatingStage, setGeneratingStage] = useState<string | undefined>(undefined);
+  const [lastCompletedStage, setLastCompletedStage] = useState<string | undefined>(undefined);
   const [generationStatus, setGenerationStatus] = useState<GenerationStatus>("idle");
   const [generationMeta, setGenerationMeta] = useState<GenerationTaskMeta | null>(null);
   const [generatedCharCount, setGeneratedCharCount] = useState(0);
@@ -84,6 +87,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const onCompleteRef = useRef<GenerateOptions["onComplete"]>(undefined);
   const onErrorRef = useRef<GenerateOptions["onError"]>(undefined);
   const streamedContentRef = useRef("");
+  const generatingStageRef = useRef<string | undefined>(undefined);
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -142,6 +146,8 @@ export function AiProvider({ children }: { children: ReactNode }) {
     clearElapsedTimer();
     setGenerating(true);
     setGeneratingStage(stage);
+    generatingStageRef.current = stage;
+    setLastCompletedStage(undefined);
     setGenerationStatus("generating");
     setGenerationMeta({
       stage,
@@ -197,7 +203,9 @@ export function AiProvider({ children }: { children: ReactNode }) {
         }
         clearElapsedTimer();
         setGenerating(false);
+        setLastCompletedStage(generatingStageRef.current);
         setGeneratingStage(undefined);
+        generatingStageRef.current = undefined;
         setGenerationStatus("completed");
         setPendingMcpCall(null);
         addTimelineEvent("done", "生成完成");
@@ -212,7 +220,9 @@ export function AiProvider({ children }: { children: ReactNode }) {
         clearElapsedTimer();
         setError(event.payload.error);
         setGenerating(false);
+        setLastCompletedStage(generatingStageRef.current);
         setGeneratingStage(undefined);
+        generatingStageRef.current = undefined;
         setGenerationStatus("failed");
         setPendingMcpCall(null);
         addTimelineEvent("error", event.payload.error);
@@ -270,7 +280,9 @@ export function AiProvider({ children }: { children: ReactNode }) {
         if (sessionIdRef.current === sessionId) {
           clearElapsedTimer();
           setGenerating(false);
+          setLastCompletedStage(generatingStageRef.current);
           setGeneratingStage(undefined);
+          generatingStageRef.current = undefined;
           setGenerationStatus("completed");
           setPendingMcpCall(null);
           setGenerationMeta(prev => prev ? { ...prev, endedAt: Date.now() } : null);
@@ -286,7 +298,9 @@ export function AiProvider({ children }: { children: ReactNode }) {
       clearElapsedTimer();
       setError(String(e));
       setGenerating(false);
+      setLastCompletedStage(generatingStageRef.current);
       setGeneratingStage(undefined);
+      generatingStageRef.current = undefined;
       setGenerationStatus("failed");
       setPendingMcpCall(null);
       addTimelineEvent("error", String(e));
@@ -307,7 +321,9 @@ export function AiProvider({ children }: { children: ReactNode }) {
       }
     }
     setGenerating(false);
+    setLastCompletedStage(generatingStageRef.current);
     setGeneratingStage(undefined);
+    generatingStageRef.current = undefined;
     setGenerationStatus("cancelled");
     setPendingMcpCall(null);
     addTimelineEvent("error", "用户取消了生成任务");
@@ -366,6 +382,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
       thinkingContent,
       error,
       generatingStage,
+      lastCompletedStage,
       generationStatus,
       generationMeta,
       generatedCharCount,

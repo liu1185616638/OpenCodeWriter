@@ -54,6 +54,16 @@ export function ProjectProfileView({ project }: { project: Project }) {
   const dirtyRef = useRef(false);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Ref to always hold the latest form values for doSave
+  const formRef = useRef({
+    premise, genre, targetAudience, sellingPoint, readerPromise,
+    narrativePov, pacePreference, defaultChapterLength, estimatedChapterCount,
+  });
+  formRef.current = {
+    premise, genre, targetAudience, sellingPoint, readerPromise,
+    narrativePov, pacePreference, defaultChapterLength, estimatedChapterCount,
+  };
+
   // Load profile and impact
   useEffect(() => {
     async function load() {
@@ -86,16 +96,17 @@ export function ProjectProfileView({ project }: { project: Project }) {
     setSaveState("saving");
     setSaveError(null);
     try {
+      const f = formRef.current;
       await saveProjectProfile(project.id, {
-        premise,
-        genre,
-        target_audience: targetAudience,
-        selling_point: sellingPoint,
-        reader_promise: readerPromise,
-        narrative_pov: narrativePov,
-        pace_preference: pacePreference,
-        default_chapter_length: defaultChapterLength,
-        estimated_chapter_count: estimatedChapterCount,
+        premise: f.premise,
+        genre: f.genre,
+        target_audience: f.targetAudience,
+        selling_point: f.sellingPoint,
+        reader_promise: f.readerPromise,
+        narrative_pov: f.narrativePov,
+        pace_preference: f.pacePreference,
+        default_chapter_length: f.defaultChapterLength,
+        estimated_chapter_count: f.estimatedChapterCount,
       });
       dirtyRef.current = false;
       setSaveState("saved");
@@ -107,7 +118,7 @@ export function ProjectProfileView({ project }: { project: Project }) {
       setSaveError(String(e));
       setSaveState("error");
     }
-  }, [project.id, premise, genre, targetAudience, sellingPoint, readerPromise, narrativePov, pacePreference, defaultChapterLength, estimatedChapterCount]);
+  }, [project.id]);
 
   // Schedule auto-save on changes
   const scheduleSave = useCallback(() => {
@@ -119,12 +130,29 @@ export function ProjectProfileView({ project }: { project: Project }) {
     }, 600);
   }, [doSave]);
 
-  // Cleanup on unmount
+  // Cleanup on unmount — flush pending save
   useEffect(() => {
     return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        // Best-effort flush
+        if (dirtyRef.current) {
+          const f = formRef.current;
+          saveProjectProfile(project.id, {
+            premise: f.premise,
+            genre: f.genre,
+            target_audience: f.targetAudience,
+            selling_point: f.sellingPoint,
+            reader_promise: f.readerPromise,
+            narrative_pov: f.narrativePov,
+            pace_preference: f.pacePreference,
+            default_chapter_length: f.defaultChapterLength,
+            estimated_chapter_count: f.estimatedChapterCount,
+          }).catch(() => {});
+        }
+      }
     };
-  }, []);
+  }, [project.id]);
 
   if (loading) {
     return (

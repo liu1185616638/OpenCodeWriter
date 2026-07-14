@@ -40,7 +40,7 @@ export function ContentEditor({ project }: { project: Project }) {
   const [selectedChapterId, setSelectedChapterId] = useState<number | null>(null);
   const { content, saving, load: loadContent, save } = useContent(selectedChapterId ?? 0);
   const { currentPreset, currentPresetId, switchPreset, presets } = useSettings();
-  const { generating, streamedContent, thinkingContent, generatingStage, generate, cancel, generationMeta, generatedCharCount, elapsedMs } = useAI();
+  const { generating, streamedContent, thinkingContent, generatingStage, generate, cancel, generationMeta, generatedCharCount, elapsedMs, generationStatus, lastCompletedStage } = useAI();
   const { focusMode, toggleFocusMode } = useWorkbench();
   const [text, setText] = useState("");
   const [showGenerateConfirm, setShowGenerateConfirm] = useState(false);
@@ -103,42 +103,47 @@ export function ContentEditor({ project }: { project: Project }) {
     }
   }, [streamedContent, generating, generatingStage]);
 
-  // Auto-save when content generation finishes
+  // Auto-save when content generation finishes successfully
+  // Only save on "completed" status — never on "failed" or "cancelled"
   const prevGeneratingRef = useRef(false);
   const generatingChapterIdRef = useRef<number | null>(null);
   const textBeforeGenerationRef = useRef("");
-  const generatingStageRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     if (prevGeneratingRef.current && !generating) {
       prevGeneratingRef.current = false;
-      const stage = generatingStageRef.current;
-      generatingStageRef.current = undefined;
 
-      if (stage !== "content") return;
+      // Only save if generation completed successfully for the content stage
+      if (generationStatus === "completed" && lastCompletedStage === "content") {
+        const chapterId = generatingChapterIdRef.current;
+        if (!chapterId || !streamedContent) return;
+        const cleaned = stripThinking(streamedContent);
+        const timer = setTimeout(() => {
+          if (applyModeRef.current === "append" && textBeforeGenerationRef.current.trim()) {
+            const combined = textBeforeGenerationRef.current + "\n\n" + cleaned;
+            setText(combined);
+            saveContent(project.id, chapterId, combined)
+              .then(() => toast.success("正文已自动保存（追加）"))
+              .catch(() => toast.error("自动保存失败"));
+          } else {
+            setText(cleaned);
+            saveContent(project.id, chapterId, cleaned)
+              .then(() => toast.success("正文已自动保存"))
+              .catch(() => toast.error("自动保存失败"));
+          }
+        }, 50);
+        return () => clearTimeout(timer);
+      }
 
-      const chapterId = generatingChapterIdRef.current;
-      if (!chapterId || !streamedContent) return;
-      const cleaned = stripThinking(streamedContent);
-      const timer = setTimeout(() => {
-        if (applyModeRef.current === "append" && textBeforeGenerationRef.current.trim()) {
-          const combined = textBeforeGenerationRef.current + "\n\n" + cleaned;
-          setText(combined);
-          saveContent(project.id, chapterId, combined)
-            .then(() => toast.success("正文已自动保存（追加）"))
-            .catch(() => toast.error("自动保存失败"));
-        } else {
-          setText(cleaned);
-          saveContent(project.id, chapterId, cleaned)
-            .then(() => toast.success("正文已自动保存"))
-            .catch(() => toast.error("自动保存失败"));
+      // On failure or cancel, restore the original text
+      if (generationStatus === "failed" || generationStatus === "cancelled") {
+        if (lastCompletedStage === "content" || lastCompletedStage === "repair") {
+          setText(textBeforeGenerationRef.current);
         }
-      }, 50);
-      return () => clearTimeout(timer);
+      }
     }
     prevGeneratingRef.current = generating;
-    generatingStageRef.current = generatingStage;
-  }, [generating, streamedContent, project.id, generatingStage]);
+  }, [generating, streamedContent, project.id, generationStatus, lastCompletedStage]);
 
   const handleSave = useCallback(async () => {
     if (selectedChapterId) {
@@ -425,7 +430,7 @@ export function ContentEditor({ project }: { project: Project }) {
                         border: "none",
                         boxShadow: "none",
                         outline: "none",
-                        fontSize: 16,
+                        fontSize: "var(--editor-font-size, 16px)",
                         lineHeight: 1.75,
                         color: "var(--text-primary)",
                         fontFamily: "var(--font-ui)",

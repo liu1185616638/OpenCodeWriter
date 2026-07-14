@@ -4,6 +4,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "sonner";
 import { Loader2 } from "lucide-react";
 import { AppShell } from "@/components/workbench/AppShell";
+import { WindowControls } from "@/components/workbench/WindowControls";
 import { NavigationProvider, useNavigation } from "@/app/AppNavigationContext";
 import { WorkbenchProvider } from "@/app/WorkbenchContext";
 import {
@@ -13,9 +14,10 @@ import {
 import { AiProvider, useAI } from "@/contexts/AIContext";
 import { SetupWizard } from "@/views/SetupWizard";
 import { ProjectList } from "@/views/ProjectList";
-import { useTheme } from "@/hooks/useTheme";
+import { useTheme, ThemeProvider } from "@/hooks/useTheme";
 import { useKeybindings } from "@/hooks/useKeybindings";
-import { useSettings } from "@/hooks/useSettings";
+import { useSettings, SettingsProvider } from "@/hooks/useSettings";
+import { AppearanceProvider } from "@/contexts/AppearanceContext";
 import { updateProjectStage } from "@/lib/tauri";
 import type { Project, CreationStage } from "@/types";
 
@@ -100,9 +102,10 @@ function AppInner() {
     checkSetup();
   }, [setRoute]);
 
-  // Compute current workspace section
+  // Compute current workspace section (also highlight "settings" when on settings route)
   const currentSection: WorkspaceRoute | null =
-    route.name === "workspace" ? route.section : null;
+    route.name === "workspace" ? route.section :
+    route.name === "settings" ? "settings" : null;
 
   // Settings tab (mapped to legacy for existing Settings component)
   const settingsTab =
@@ -154,6 +157,11 @@ function AppInner() {
   }, [navigate]);
 
   const handleNavigateSection = useCallback((section: WorkspaceRoute) => {
+    // Settings is a top-level route, not a workspace section
+    if (section === "settings") {
+      navigate({ name: "settings", tab: "model-presets" });
+      return;
+    }
     if (currentProject) {
       // Persist creation progress stage
       const progress = routeToProgressStage(section);
@@ -235,14 +243,8 @@ function AppInner() {
               case "tasks":
                 return <TaskCenter project={currentProject} />;
               case "settings":
-                return (
-                  <Settings
-                    onBack={() => goBack()}
-                    projectId={currentProject?.id ?? null}
-                    activeTab={settingsTab}
-                    currentProject={currentProject}
-                  />
-                );
+                // Settings is handled as a top-level route; this should not be reached
+                return <OutlineEditor project={currentProject} />;
               default:
                 return <OutlineEditor project={currentProject} />;
             }
@@ -260,11 +262,18 @@ function AppInner() {
     );
   };
 
-  // ── Setup wizard: no shell, just content ──
+  // ── Setup wizard: minimal drag bar + content ──
   if (route.name === "setup") {
     return (
       <TooltipProvider>
         <div className="flex flex-col h-screen" style={{ backgroundColor: "var(--canvas)" }}>
+          <div
+            className="flex items-center justify-end shrink-0"
+            style={{ height: 36, backgroundColor: "var(--surface)" }}
+            data-tauri-drag-region
+          >
+            <WindowControls />
+          </div>
           {renderContent()}
         </div>
         <Toaster position="bottom-right" richColors closeButton />
@@ -305,17 +314,54 @@ function AppInner() {
           currentSection="settings"
           modelPresetName={currentPreset?.model_name}
           connected={Boolean(currentPreset)}
-          onNavigate={(section) => {
-            if (currentProject) {
-              navigate({ name: "workspace", projectId: currentProject.id, section });
-            }
-          }}
+          onNavigate={handleNavigateSection}
           onSwitchProject={handleSwitchProject}
           pageTitle="设置"
           onBack={() => goBack()}
           canGoBack={canGoBack}
         >
-          {renderContent()}
+          <div className="flex h-full overflow-hidden">
+            {/* Settings sub-navigation */}
+            <div className="shrink-0 flex flex-col" style={{ width: 200, borderRight: "1px solid var(--border)", backgroundColor: "var(--surface)" }}>
+              {([
+                { tab: "model-presets" as SettingsSection, label: "模型预设" },
+                { tab: "model-routes" as SettingsSection, label: "模型路由" },
+                { tab: "tools-permissions" as SettingsSection, label: "工具与权限" },
+                { tab: "mcp" as SettingsSection, label: "MCP" },
+                { tab: "appearance" as SettingsSection, label: "外观" },
+                { tab: "shortcuts" as SettingsSection, label: "快捷键" },
+                { tab: "about" as SettingsSection, label: "关于" },
+              ]).map(({ tab, label }) => (
+                <button
+                  key={tab}
+                  onClick={() => navigate({ name: "settings", tab })}
+                  style={{
+                    height: 36,
+                    padding: "0 16px",
+                    fontSize: 13,
+                    textAlign: "left",
+                    backgroundColor: route.tab === tab ? "var(--surface-selected)" : "transparent",
+                    color: route.tab === tab ? "var(--text-primary)" : "var(--text-secondary)",
+                    fontWeight: route.tab === tab ? 500 : 400,
+                    borderLeft: route.tab === tab ? "2px solid var(--accent)" : "2px solid transparent",
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {/* Settings content */}
+            <div className="flex-1 min-w-0 overflow-y-auto">
+              <Suspense fallback={<RouteFallback />}>
+                <Settings
+                  onBack={() => goBack()}
+                  projectId={currentProject?.id ?? null}
+                  activeTab={settingsTab}
+                  currentProject={currentProject}
+                />
+              </Suspense>
+            </div>
+          </div>
         </AppShell>
         <Toaster position="bottom-right" richColors closeButton />
       </TooltipProvider>
@@ -352,12 +398,18 @@ function AppInner() {
 
 export default function App() {
   return (
-    <AiProvider>
-      <NavigationProvider>
-        <WorkbenchProvider>
-          <AppInner />
-        </WorkbenchProvider>
-      </NavigationProvider>
-    </AiProvider>
+    <ThemeProvider>
+      <SettingsProvider>
+        <AppearanceProvider>
+          <AiProvider>
+            <NavigationProvider>
+              <WorkbenchProvider>
+                <AppInner />
+              </WorkbenchProvider>
+            </NavigationProvider>
+          </AiProvider>
+        </AppearanceProvider>
+      </SettingsProvider>
+    </ThemeProvider>
   );
 }

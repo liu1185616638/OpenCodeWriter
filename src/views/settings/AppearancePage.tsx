@@ -6,28 +6,12 @@ import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useTheme } from "@/hooks/useTheme";
-import { getSetting, setSetting } from "@/lib/tauri";
+import { useAppearance } from "@/contexts/AppearanceContext";
 import { Sun, Moon } from "lucide-react";
 
 export function AppearancePage() {
   const { theme, set } = useTheme();
-  const [density, setDensity] = useState("comfortable");
-  const [editorFontSize, setEditorFontSize] = useState("16");
-
-  useEffect(() => {
-    getSetting("ui_density").then(v => { if (v) setDensity(v); });
-    getSetting("editor_font_size").then(v => { if (v) setEditorFontSize(v); });
-  }, []);
-
-  const handleDensityChange = async (value: string) => {
-    setDensity(value);
-    await setSetting("ui_density", value);
-  };
-
-  const handleFontSizeChange = async (value: string) => {
-    setEditorFontSize(value);
-    await setSetting("editor_font_size", value);
-  };
+  const { density, editorFontSize, setDensity, setEditorFontSize } = useAppearance();
 
   return (
     <div className="flex-1 overflow-auto min-h-0 px-10 py-8">

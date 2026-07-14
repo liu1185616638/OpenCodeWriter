@@ -2,7 +2,7 @@
  * AppShell — Carbon Frost 工作台外壳
  *
  * 布局：左侧 NavigationPane + 中央主工作区（TopTaskbar + MainContent + TaskDrawer + StatusBar）
- * 在专注模式下隐藏侧栏、检查器和任务抽屉。
+ * 在专注模式下隐藏侧栏、任务抽屉和状态栏。
  *
  * 替代旧的 AppSidebar + TitleBar + WorkspacePageLayout 组合。
  */
@@ -34,8 +34,6 @@ export interface AppShellProps {
   canGoBack?: boolean;
   /** Main content */
   children: ReactNode;
-  /** Right inspector content (null = no inspector) */
-  inspectorContent?: ReactNode | null;
   /** Status bar props */
   wordCount?: number;
   chapterCount?: number;
@@ -59,15 +57,13 @@ export function AppShell({
   onBack,
   canGoBack,
   children,
-  inspectorContent,
   wordCount,
   chapterCount,
   hideSidebar = false,
 }: AppShellProps) {
-  const { focusMode, inspectorOpen, inspectorWidth } = useWorkbench();
+  const { focusMode } = useWorkbench();
 
   const showSidebar = !hideSidebar && !focusMode;
-  const showInspector = !focusMode && inspectorOpen && inspectorContent != null;
 
   return (
     <div className="flex h-screen w-screen overflow-hidden" style={{ backgroundColor: "var(--canvas)" }}>
@@ -97,37 +93,25 @@ export function AppShell({
           canGoBack={canGoBack}
         />
 
-        {/* Main content + Inspector */}
+        {/* Main content */}
         <div className="flex flex-1 min-h-0">
           <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
             {children}
           </div>
-
-          {/* Right Inspector Pane */}
-          {showInspector && (
-            <div
-              className="shrink-0 border-l overflow-hidden"
-              style={{
-                width: inspectorWidth,
-                borderColor: "var(--border)",
-                backgroundColor: "var(--surface)",
-              }}
-            >
-              {inspectorContent}
-            </div>
-          )}
         </div>
 
-        {/* Task Drawer */}
-        <TaskDrawer projectId={currentProject?.id} />
+        {/* Task Drawer — hidden in focus mode */}
+        {!focusMode && <TaskDrawer projectId={currentProject?.id} />}
 
-        {/* Status Bar */}
-        <StatusBar
-          wordCount={wordCount}
-          chapterCount={chapterCount}
-          modelPresetName={modelPresetName}
-          connected={connected}
-        />
+        {/* Status Bar — hidden in focus mode */}
+        {!focusMode && (
+          <StatusBar
+            wordCount={wordCount}
+            chapterCount={chapterCount}
+            modelPresetName={modelPresetName}
+            connected={connected}
+          />
+        )}
       </div>
     </div>
   );

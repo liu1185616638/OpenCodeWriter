@@ -206,7 +206,7 @@ export function NavigationPane({
                 }}
               />
               <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                {connected ? "已连接" : "未连接"}
+                {connected ? "已配置" : "未配置"}
               </span>
             </div>
           </div>
