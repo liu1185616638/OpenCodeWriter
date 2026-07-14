@@ -2,7 +2,6 @@
  * AppearancePage — 外观设置页（主题、密度、编辑器字号）
  */
 
-import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useTheme } from "@/hooks/useTheme";
@@ -17,7 +16,6 @@ export function AppearancePage() {
     <div className="flex-1 overflow-auto min-h-0 px-10 py-8">
       <h2 className="text-xl font-semibold text-foreground mb-6">外观</h2>
 
-      {/* Theme */}
       <Card className="rounded-3xl border border-border shadow-sm mb-5">
         <CardHeader><CardTitle className="text-base">主题</CardTitle></CardHeader>
         <CardContent>
@@ -44,11 +42,10 @@ export function AppearancePage() {
         </CardContent>
       </Card>
 
-      {/* Density */}
       <Card className="rounded-3xl border border-border shadow-sm mb-5">
         <CardHeader><CardTitle className="text-base">界面密度</CardTitle></CardHeader>
         <CardContent>
-          <Select value={density} onValueChange={handleDensityChange}>
+          <Select value={density} onValueChange={setDensity}>
             <SelectTrigger className="rounded-xl"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="compact">紧凑</SelectItem>
@@ -60,11 +57,10 @@ export function AppearancePage() {
         </CardContent>
       </Card>
 
-      {/* Editor font size */}
       <Card className="rounded-3xl border border-border shadow-sm">
         <CardHeader><CardTitle className="text-base">编辑器字号</CardTitle></CardHeader>
         <CardContent>
-          <Select value={editorFontSize} onValueChange={handleFontSizeChange}>
+          <Select value={editorFontSize} onValueChange={setEditorFontSize}>
             <SelectTrigger className="rounded-xl"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="14">14px — 小</SelectItem>
