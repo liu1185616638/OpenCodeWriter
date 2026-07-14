@@ -1,16 +1,57 @@
-/// AiSessionRegistry — tracks active AI sessions for real cancellation.
+/// AiSessionRegistry — tracks active AI sessions and provides wakeable cancellation.
 ///
-/// Each session registers an `Arc<AtomicBool>` cancellation flag.
-/// `cancel_ai_session` sets the flag to true; the streaming loop in
-/// `AiTaskService::execute_inner` checks it before processing each delta.
-/// Sessions are removed when the task completes (success, error, or cancel).
+/// A plain AtomicBool can only be observed after the currently awaited future
+/// returns. SessionCancellation combines an atomic terminal flag with Notify so
+/// `tokio::select!` can wake immediately while waiting for Runtime startup or the
+/// next stream item.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use tokio::sync::Notify;
+
+pub struct SessionCancellation {
+    cancelled: AtomicBool,
+    notify: Notify,
+}
+
+impl SessionCancellation {
+    fn new() -> Self {
+        Self {
+            cancelled: AtomicBool::new(false),
+            notify: Notify::new(),
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    pub fn cancel(&self) {
+        if !self.cancelled.swap(true, Ordering::SeqCst) {
+            self.notify.notify_waiters();
+        }
+    }
+
+    /// Resolves as soon as cancellation is requested. The second flag check
+    /// prevents a notification between the first check and future creation from
+    /// being missed.
+    pub async fn cancelled(&self) {
+        if self.is_cancelled() {
+            return;
+        }
+
+        let notified = self.notify.notified();
+        if self.is_cancelled() {
+            return;
+        }
+
+        notified.await;
+    }
+}
 
 pub struct AiSessionRegistry {
-    sessions: Mutex<HashMap<String, std::sync::Arc<AtomicBool>>>,
+    sessions: Mutex<HashMap<String, Arc<SessionCancellation>>>,
 }
 
 impl AiSessionRegistry {
@@ -20,26 +61,33 @@ impl AiSessionRegistry {
         }
     }
 
-    /// Register a new session and return its cancellation flag.
-    pub fn register(&self, session_id: &str) -> std::sync::Arc<AtomicBool> {
-        let flag = std::sync::Arc::new(AtomicBool::new(false));
+    pub fn register(&self, session_id: &str) -> Arc<SessionCancellation> {
+        let cancellation = Arc::new(SessionCancellation::new());
         let mut map = self.sessions.lock().expect("session registry poisoned");
-        map.insert(session_id.to_string(), flag.clone());
-        flag
+        map.insert(session_id.to_string(), cancellation.clone());
+        cancellation
     }
 
     /// Signal cancellation for a session. Returns true if the session existed.
     pub fn cancel(&self, session_id: &str) -> bool {
         let map = self.sessions.lock().expect("session registry poisoned");
-        if let Some(flag) = map.get(session_id) {
-            flag.store(true, Ordering::SeqCst);
+        if let Some(cancellation) = map.get(session_id) {
+            cancellation.cancel();
             true
         } else {
             false
         }
     }
 
-    /// Remove a session from the registry (called when task ends).
+    pub fn is_cancelled(&self, session_id: &str) -> bool {
+        let map = self.sessions.lock().expect("session registry poisoned");
+        map.get(session_id)
+            .map(|cancellation| cancellation.is_cancelled())
+            .unwrap_or(false)
+    }
+
+    /// Remove a session from the registry after both Runtime and any apply phase
+    /// have reached a terminal state.
     pub fn unregister(&self, session_id: &str) {
         let mut map = self.sessions.lock().expect("session registry poisoned");
         map.remove(session_id);
