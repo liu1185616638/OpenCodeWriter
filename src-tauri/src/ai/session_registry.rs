@@ -29,13 +29,12 @@ impl SessionCancellation {
 
     pub fn cancel(&self) {
         if !self.cancelled.swap(true, Ordering::SeqCst) {
-            self.notify.notify_waiters();
+            // notify_one stores a permit when the waiter has not been polled yet,
+            // preventing a lost wake-up between flag checks and `.await`.
+            self.notify.notify_one();
         }
     }
 
-    /// Resolves as soon as cancellation is requested. The second flag check
-    /// prevents a notification between the first check and future creation from
-    /// being missed.
     pub async fn cancelled(&self) {
         if self.is_cancelled() {
             return;
@@ -86,8 +85,7 @@ impl AiSessionRegistry {
             .unwrap_or(false)
     }
 
-    /// Remove a session from the registry after both Runtime and any apply phase
-    /// have reached a terminal state.
+    /// Remove a session from the registry after Runtime reaches a terminal state.
     pub fn unregister(&self, session_id: &str) {
         let mut map = self.sessions.lock().expect("session registry poisoned");
         map.remove(session_id);
@@ -97,5 +95,38 @@ impl AiSessionRegistry {
 impl Default for AiSessionRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::time::{timeout, Duration};
+
+    #[tokio::test]
+    async fn cancellation_wakes_registered_waiter() {
+        let cancellation = Arc::new(SessionCancellation::new());
+        let waiting = cancellation.clone();
+        let task = tokio::spawn(async move {
+            waiting.cancelled().await;
+        });
+
+        tokio::task::yield_now().await;
+        cancellation.cancel();
+
+        timeout(Duration::from_secs(1), task)
+            .await
+            .expect("cancellation waiter should wake")
+            .expect("waiter task should complete");
+    }
+
+    #[tokio::test]
+    async fn cancellation_before_wait_is_observed() {
+        let cancellation = SessionCancellation::new();
+        cancellation.cancel();
+
+        timeout(Duration::from_secs(1), cancellation.cancelled())
+            .await
+            .expect("pre-cancelled session should resolve immediately");
     }
 }
