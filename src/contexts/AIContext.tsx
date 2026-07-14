@@ -6,22 +6,10 @@ import { approveMcpCall, denyMcpCall, cancelAiSession } from "@/lib/tauri";
 import type { GenerationStatus, GenerationTaskMeta } from "../types/ai";
 import type { AiTimelineEvent } from "@/types";
 
-// =============================================================================
-// AI Context — lift useAI state to App level so it survives tab switches
-//
-// Streaming strategy: Each ai-chunk delta immediately updates React state.
-// The SSE stream naturally delivers small deltas (1-few tokens each), which
-// gives the typewriter effect for free. Streamdown's incremental block
-// rendering ensures only the tail block re-renders per delta.
-//
-// Phase F: Also collects a timeline of all AI events (tool, skill, mcp, etc.)
-// for the Task Drawer, and supports backend-side session cancellation.
-// =============================================================================
-
 interface AiChunkPayload {
   session_id: string;
   chunk: string;
-  chunk_type: string; // "thinking" | "content"
+  chunk_type: string;
 }
 
 interface AiDonePayload {
@@ -31,6 +19,10 @@ interface AiDonePayload {
 interface AiErrorPayload {
   session_id: string;
   error: string;
+}
+
+interface AiCancelledPayload {
+  session_id: string;
 }
 
 interface McpCallPayload {
@@ -44,6 +36,7 @@ export interface GenerateOptions {
   args: Record<string, unknown>;
   onComplete?: (content: string) => void;
   onError?: (error: string) => void;
+  onCancel?: () => void;
   /** Which creation stage is being generated (e.g. "outline", "characters") */
   stage?: string;
 }
@@ -63,8 +56,10 @@ interface AiContextValue {
   timelineEvents: AiTimelineEvent[];
   resetGeneration: () => void;
   generate: (options: GenerateOptions | string, legacyArgs?: Record<string, unknown>) => Promise<void>;
-  cancel: () => void;
+  cancel: () => Promise<void>;
 }
+
+type TerminalStatus = Exclude<GenerationStatus, "idle" | "confirming" | "generating">;
 
 const AiContext = createContext<AiContextValue | null>(null);
 
@@ -81,19 +76,21 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const [elapsedMs, setElapsedMs] = useState(0);
   const [pendingMcpCall, setPendingMcpCall] = useState<McpCallPayload | null>(null);
   const [timelineEvents, setTimelineEvents] = useState<AiTimelineEvent[]>([]);
+
   const sessionIdRef = useRef<string | null>(null);
+  const terminalSessionIdsRef = useRef<Set<string>>(new Set());
   const eventIdRef = useRef(0);
   const unlistenFns = useRef<UnlistenFn[]>([]);
   const onCompleteRef = useRef<GenerateOptions["onComplete"]>(undefined);
   const onErrorRef = useRef<GenerateOptions["onError"]>(undefined);
+  const onCancelRef = useRef<GenerateOptions["onCancel"]>(undefined);
   const streamedContentRef = useRef("");
   const generatingStageRef = useRef<string | undefined>(undefined);
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Keep ref in sync so onComplete can access latest content
   const updateStreamedContent = useCallback((updater: string | ((prev: string) => string)) => {
-    setStreamedContent(prev => {
+    setStreamedContent((prev) => {
       const next = typeof updater === "function" ? updater(prev) : updater;
       streamedContentRef.current = next;
       return next;
@@ -101,18 +98,35 @@ export function AiProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const updateThinkingContent = useCallback((updater: string | ((prev: string) => string)) => {
-    setThinkingContent(prev => typeof updater === "function" ? updater(prev) : updater);
+    setThinkingContent((prev) => (typeof updater === "function" ? updater(prev) : updater));
   }, []);
 
-  const addTimelineEvent = useCallback((eventType: AiTimelineEvent["event_type"], label: string, detail?: string) => {
+  const addTimelineEvent = useCallback((
+    eventType: AiTimelineEvent["event_type"],
+    label: string,
+    detail?: string,
+  ) => {
     const id = ++eventIdRef.current;
-    const event: AiTimelineEvent = { id, event_type: eventType, label, detail, timestamp: Date.now() };
-    setTimelineEvents(prev => [...prev, event]);
+    const event: AiTimelineEvent = {
+      id,
+      event_type: eventType,
+      label,
+      detail,
+      timestamp: Date.now(),
+    };
+    setTimelineEvents((prev) => [...prev, event]);
   }, []);
 
   const cleanup = useCallback(() => {
-    unlistenFns.current.forEach(fn => fn());
+    unlistenFns.current.forEach((unlisten) => unlisten());
     unlistenFns.current = [];
+  }, []);
+
+  const clearFallbackTimer = useCallback(() => {
+    if (fallbackTimerRef.current) {
+      clearTimeout(fallbackTimerRef.current);
+      fallbackTimerRef.current = null;
+    }
   }, []);
 
   const clearElapsedTimer = useCallback(() => {
@@ -122,12 +136,76 @@ export function AiProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const generate = useCallback(async (options: GenerateOptions | string, legacyArgs?: Record<string, unknown>) => {
-    // Backward compat: generate("command", { args })
+  /**
+   * The only place allowed to move a generation session into a terminal state.
+   * Events, invoke completion, invoke errors and user cancellation all pass
+   * through this guard so callbacks can run at most once per session.
+   */
+  const finalizeSession = useCallback((
+    sessionId: string,
+    status: TerminalStatus,
+    detail?: string,
+  ): boolean => {
+    if (terminalSessionIdsRef.current.has(sessionId)) return false;
+    if (sessionIdRef.current !== sessionId) return false;
+
+    terminalSessionIdsRef.current.add(sessionId);
+
+    const completedStage = generatingStageRef.current;
+    const onComplete = onCompleteRef.current;
+    const onError = onErrorRef.current;
+    const onCancel = onCancelRef.current;
+
+    clearFallbackTimer();
+    clearElapsedTimer();
+
+    sessionIdRef.current = null;
+    generatingStageRef.current = undefined;
+    onCompleteRef.current = undefined;
+    onErrorRef.current = undefined;
+    onCancelRef.current = undefined;
+
+    setGenerating(false);
+    setLastCompletedStage(completedStage);
+    setGeneratingStage(undefined);
+    setGenerationStatus(status);
+    setPendingMcpCall(null);
+    setGenerationMeta((prev) => (prev ? { ...prev, endedAt: Date.now() } : null));
+
+    if (status === "completed") {
+      setError(null);
+      addTimelineEvent("done", "生成完成");
+    } else if (status === "cancelled") {
+      setError(null);
+      addTimelineEvent("error", "生成已取消");
+    } else {
+      const message = detail || "生成失败";
+      setError(message);
+      addTimelineEvent("error", message);
+    }
+
+    cleanup();
+
+    if (status === "completed") {
+      onComplete?.(streamedContentRef.current);
+    } else if (status === "cancelled") {
+      onCancel?.();
+    } else {
+      onError?.(detail || "生成失败");
+    }
+
+    return true;
+  }, [addTimelineEvent, cleanup, clearElapsedTimer, clearFallbackTimer]);
+
+  const generate = useCallback(async (
+    options: GenerateOptions | string,
+    legacyArgs?: Record<string, unknown>,
+  ) => {
     let command: string;
     let args: Record<string, unknown>;
     let onComplete: GenerateOptions["onComplete"];
     let onError: GenerateOptions["onError"];
+    let onCancel: GenerateOptions["onCancel"];
     let stage: string | undefined;
 
     if (typeof options === "string") {
@@ -138,12 +216,21 @@ export function AiProvider({ children }: { children: ReactNode }) {
       args = options.args;
       onComplete = options.onComplete;
       onError = options.onError;
+      onCancel = options.onCancel;
       stage = options.stage;
     }
 
-    // Cleanup previous listeners
     cleanup();
+    clearFallbackTimer();
     clearElapsedTimer();
+    terminalSessionIdsRef.current.clear();
+
+    const sessionId = crypto.randomUUID();
+    sessionIdRef.current = sessionId;
+    onCompleteRef.current = onComplete;
+    onErrorRef.current = onError;
+    onCancelRef.current = onCancel;
+
     setGenerating(true);
     setGeneratingStage(stage);
     generatingStageRef.current = stage;
@@ -166,184 +253,187 @@ export function AiProvider({ children }: { children: ReactNode }) {
     setError(null);
     addTimelineEvent("content", `开始生成${stage ? `：${stage}` : ""}`);
 
-    // Start elapsed time tracker
     elapsedTimerRef.current = setInterval(() => {
-      setElapsedMs(prev => prev + 500);
+      setElapsedMs((prev) => prev + 500);
     }, 500);
 
-    onCompleteRef.current = onComplete;
-    onErrorRef.current = onError;
-
-    const sessionId = crypto.randomUUID();
-    sessionIdRef.current = sessionId;
-
-    // Each ai-chunk immediately updates React state — no buffering.
-    // The SSE stream naturally delivers small deltas, giving typewriter
-    // effect. Streamdown handles incremental rendering efficiently.
-    let chunkCount = 0;
-    const chunkUnlisten = await listen<AiChunkPayload>("ai-chunk", (event) => {
-      if (event.payload.session_id === sessionIdRef.current) {
-        chunkCount++;
+    try {
+      const chunkUnlisten = await listen<AiChunkPayload>("ai-chunk", (event) => {
+        if (event.payload.session_id !== sessionId || sessionIdRef.current !== sessionId) return;
         const { chunk, chunk_type } = event.payload;
         if (chunk_type === "thinking") {
-          updateThinkingContent(prev => prev + chunk);
+          updateThinkingContent((prev) => prev + chunk);
         } else {
-          updateStreamedContent(prev => prev + chunk);
-          setGeneratedCharCount(prev => prev + chunk.length);
+          updateStreamedContent((prev) => prev + chunk);
+          setGeneratedCharCount((prev) => prev + chunk.length);
         }
-      }
-    });
+      });
 
-    const doneUnlisten = await listen<AiDonePayload>("ai-done", (event) => {
-      if (event.payload.session_id === sessionIdRef.current) {
-        // Clear fallback timer — normal event-driven completion succeeded
-        if (fallbackTimerRef.current) {
-          clearTimeout(fallbackTimerRef.current);
-          fallbackTimerRef.current = null;
+      const doneUnlisten = await listen<AiDonePayload>("ai-done", (event) => {
+        if (event.payload.session_id === sessionId) {
+          finalizeSession(sessionId, "completed");
         }
-        clearElapsedTimer();
-        setGenerating(false);
-        setLastCompletedStage(generatingStageRef.current);
-        setGeneratingStage(undefined);
-        generatingStageRef.current = undefined;
-        setGenerationStatus("completed");
-        setPendingMcpCall(null);
-        addTimelineEvent("done", "生成完成");
-        setGenerationMeta(prev => prev ? { ...prev, endedAt: Date.now() } : null);
-        cleanup();
-        onCompleteRef.current?.(streamedContentRef.current);
-      }
-    });
+      });
 
-    const errorUnlisten = await listen<AiErrorPayload>("ai-error", (event) => {
-      if (event.payload.session_id === sessionIdRef.current) {
-        clearElapsedTimer();
-        setError(event.payload.error);
-        setGenerating(false);
-        setLastCompletedStage(generatingStageRef.current);
-        setGeneratingStage(undefined);
-        generatingStageRef.current = undefined;
-        setGenerationStatus("failed");
-        setPendingMcpCall(null);
-        addTimelineEvent("error", event.payload.error);
-        setGenerationMeta(prev => prev ? { ...prev, endedAt: Date.now() } : null);
-        cleanup();
-        onErrorRef.current?.(event.payload.error);
-      }
-    });
+      const errorUnlisten = await listen<AiErrorPayload>("ai-error", (event) => {
+        if (event.payload.session_id === sessionId) {
+          finalizeSession(sessionId, "failed", event.payload.error);
+        }
+      });
 
-    const mcpUnlisten = await listen<McpCallPayload>("ai-mcp-call", (event) => {
-      if (event.payload.session_id === sessionIdRef.current) {
+      const cancelledUnlisten = await listen<AiCancelledPayload>("ai-cancelled", (event) => {
+        if (event.payload.session_id === sessionId) {
+          finalizeSession(sessionId, "cancelled");
+        }
+      });
+
+      const mcpUnlisten = await listen<McpCallPayload>("ai-mcp-call", (event) => {
+        if (event.payload.session_id !== sessionId || sessionIdRef.current !== sessionId) return;
         setPendingMcpCall(event.payload);
-        addTimelineEvent("mcp_call", `MCP 调用: ${event.payload.tool_name}`, JSON.stringify(event.payload.data, null, 2));
-      }
-    });
+        addTimelineEvent(
+          "mcp_call",
+          `MCP 调用: ${event.payload.tool_name}`,
+          JSON.stringify(event.payload.data, null, 2),
+        );
+      });
 
-    // Phase F: Listen to additional events for timeline
-    const toolCallUnlisten = await listen<{ session_id: string; tool_name: string; data: Record<string, unknown> }>("ai-tool-call", (event) => {
-      if (event.payload.session_id === sessionIdRef.current) {
-        addTimelineEvent("tool_call", `工具调用: ${event.payload.tool_name}`);
-      }
-    });
-
-    const toolResultUnlisten = await listen<{ session_id: string; tool_name: string; success: boolean; error: string }>("ai-tool-result", (event) => {
-      if (event.payload.session_id === sessionIdRef.current) {
-        addTimelineEvent("tool_result", `工具结果: ${event.payload.tool_name}`, event.payload.success ? undefined : event.payload.error);
-      }
-    });
-
-    const skillStartUnlisten = await listen<{ session_id: string; skill_name: string }>("ai-skill-start", (event) => {
-      if (event.payload.session_id === sessionIdRef.current) {
-        addTimelineEvent("skill_start", `技能开始: ${event.payload.skill_name}`);
-      }
-    });
-
-    const skillResultUnlisten = await listen<{ session_id: string; skill_name: string; success: boolean; error: string }>("ai-skill-result", (event) => {
-      if (event.payload.session_id === sessionIdRef.current) {
-        addTimelineEvent("skill_result", `技能完成: ${event.payload.skill_name}`, event.payload.success ? undefined : event.payload.error);
-      }
-    });
-
-    const mcpResultUnlisten = await listen<{ session_id: string; tool_name: string; success: boolean; error: string }>("ai-mcp-result", (event) => {
-      if (event.payload.session_id === sessionIdRef.current) {
-        addTimelineEvent("mcp_result", `MCP 结果: ${event.payload.tool_name}`, event.payload.success ? undefined : event.payload.error);
-      }
-    });
-
-    unlistenFns.current = [chunkUnlisten, doneUnlisten, errorUnlisten, mcpUnlisten, toolCallUnlisten, toolResultUnlisten, skillStartUnlisten, skillResultUnlisten, mcpResultUnlisten];
-
-    try {
-      await invoke(command, { sessionId, ...args });
-      // Fallback: if ai-done event was not received (e.g. emit failed),
-      // force completion after 200ms after invoke returns.
-      fallbackTimerRef.current = setTimeout(() => {
-        if (sessionIdRef.current === sessionId) {
-          clearElapsedTimer();
-          setGenerating(false);
-          setLastCompletedStage(generatingStageRef.current);
-          setGeneratingStage(undefined);
-          generatingStageRef.current = undefined;
-          setGenerationStatus("completed");
-          setPendingMcpCall(null);
-          setGenerationMeta(prev => prev ? { ...prev, endedAt: Date.now() } : null);
-          cleanup();
-          onCompleteRef.current?.(streamedContentRef.current);
+      const toolCallUnlisten = await listen<{
+        session_id: string;
+        tool_name: string;
+        data: Record<string, unknown>;
+      }>("ai-tool-call", (event) => {
+        if (event.payload.session_id === sessionId && sessionIdRef.current === sessionId) {
+          addTimelineEvent("tool_call", `工具调用: ${event.payload.tool_name}`);
         }
+      });
+
+      const toolResultUnlisten = await listen<{
+        session_id: string;
+        tool_name: string;
+        success: boolean;
+        error: string;
+      }>("ai-tool-result", (event) => {
+        if (event.payload.session_id === sessionId && sessionIdRef.current === sessionId) {
+          addTimelineEvent(
+            "tool_result",
+            `工具结果: ${event.payload.tool_name}`,
+            event.payload.success ? undefined : event.payload.error,
+          );
+        }
+      });
+
+      const skillStartUnlisten = await listen<{
+        session_id: string;
+        skill_name: string;
+      }>("ai-skill-start", (event) => {
+        if (event.payload.session_id === sessionId && sessionIdRef.current === sessionId) {
+          addTimelineEvent("skill_start", `技能开始: ${event.payload.skill_name}`);
+        }
+      });
+
+      const skillResultUnlisten = await listen<{
+        session_id: string;
+        skill_name: string;
+        success: boolean;
+        error: string;
+      }>("ai-skill-result", (event) => {
+        if (event.payload.session_id === sessionId && sessionIdRef.current === sessionId) {
+          addTimelineEvent(
+            "skill_result",
+            `技能完成: ${event.payload.skill_name}`,
+            event.payload.success ? undefined : event.payload.error,
+          );
+        }
+      });
+
+      const mcpResultUnlisten = await listen<{
+        session_id: string;
+        tool_name: string;
+        success: boolean;
+        error: string;
+      }>("ai-mcp-result", (event) => {
+        if (event.payload.session_id === sessionId && sessionIdRef.current === sessionId) {
+          addTimelineEvent(
+            "mcp_result",
+            `MCP 结果: ${event.payload.tool_name}`,
+            event.payload.success ? undefined : event.payload.error,
+          );
+        }
+      });
+
+      unlistenFns.current = [
+        chunkUnlisten,
+        doneUnlisten,
+        errorUnlisten,
+        cancelledUnlisten,
+        mcpUnlisten,
+        toolCallUnlisten,
+        toolResultUnlisten,
+        skillStartUnlisten,
+        skillResultUnlisten,
+        mcpResultUnlisten,
+      ];
+
+      await invoke(command, { sessionId, ...args });
+
+      // Some commands may return successfully even when an event could not be
+      // emitted. The terminal guard makes this fallback safe and idempotent.
+      fallbackTimerRef.current = setTimeout(() => {
+        finalizeSession(sessionId, "completed");
       }, 200);
-    } catch (e) {
-      if (fallbackTimerRef.current) {
-        clearTimeout(fallbackTimerRef.current);
-        fallbackTimerRef.current = null;
+    } catch (cause) {
+      const message = String(cause);
+      const normalized = message.toLowerCase();
+      if (normalized.includes("cancelled") || message.includes("用户取消")) {
+        finalizeSession(sessionId, "cancelled");
+      } else {
+        finalizeSession(sessionId, "failed", message);
       }
-      clearElapsedTimer();
-      setError(String(e));
-      setGenerating(false);
-      setLastCompletedStage(generatingStageRef.current);
-      setGeneratingStage(undefined);
-      generatingStageRef.current = undefined;
-      setGenerationStatus("failed");
-      setPendingMcpCall(null);
-      addTimelineEvent("error", String(e));
-      setGenerationMeta(prev => prev ? { ...prev, endedAt: Date.now() } : null);
-      cleanup();
-      onErrorRef.current?.(String(e));
     }
-  }, [cleanup, clearElapsedTimer, updateStreamedContent, updateThinkingContent, addTimelineEvent]);
+  }, [
+    addTimelineEvent,
+    cleanup,
+    clearElapsedTimer,
+    clearFallbackTimer,
+    finalizeSession,
+    updateStreamedContent,
+    updateThinkingContent,
+  ]);
 
   const cancel = useCallback(async () => {
-    clearElapsedTimer();
-    // Phase F: Call backend to cancel the AI session
-    if (sessionIdRef.current) {
-      try {
-        await cancelAiSession(sessionIdRef.current);
-      } catch {
-        // Backend cancel may fail if session already ended — ignore
-      }
+    const sessionId = sessionIdRef.current;
+    if (!sessionId) return;
+
+    // Finalize locally first so a backend event or the original invoke rejection
+    // cannot race the UI into a failed state.
+    finalizeSession(sessionId, "cancelled");
+
+    try {
+      await cancelAiSession(sessionId);
+    } catch (cause) {
+      console.error("Failed to cancel AI session:", cause);
     }
-    setGenerating(false);
-    setLastCompletedStage(generatingStageRef.current);
-    setGeneratingStage(undefined);
-    generatingStageRef.current = undefined;
-    setGenerationStatus("cancelled");
-    setPendingMcpCall(null);
-    addTimelineEvent("error", "用户取消了生成任务");
-    cleanup();
-  }, [cleanup, clearElapsedTimer, addTimelineEvent]);
+  }, [finalizeSession]);
 
   const resetGeneration = useCallback(() => {
     setGenerationStatus("idle");
     setGenerationMeta(null);
     setGeneratedCharCount(0);
     setElapsedMs(0);
+    setError(null);
   }, []);
 
   const approvePendingMcpCall = useCallback(async () => {
     if (!pendingMcpCall) return;
     try {
       await approveMcpCall({
-        project_id: typeof pendingMcpCall.data.project_id === "number" ? pendingMcpCall.data.project_id : null,
+        project_id: typeof pendingMcpCall.data.project_id === "number"
+          ? pendingMcpCall.data.project_id
+          : null,
         session_id: pendingMcpCall.session_id,
-        server_name: typeof pendingMcpCall.data.server_name === "string" ? pendingMcpCall.data.server_name : "runtime",
+        server_name: typeof pendingMcpCall.data.server_name === "string"
+          ? pendingMcpCall.data.server_name
+          : "runtime",
         tool_name: pendingMcpCall.tool_name,
         arguments: pendingMcpCall.data,
       });
@@ -356,9 +446,13 @@ export function AiProvider({ children }: { children: ReactNode }) {
     if (!pendingMcpCall) return;
     try {
       await denyMcpCall({
-        project_id: typeof pendingMcpCall.data.project_id === "number" ? pendingMcpCall.data.project_id : null,
+        project_id: typeof pendingMcpCall.data.project_id === "number"
+          ? pendingMcpCall.data.project_id
+          : null,
         session_id: pendingMcpCall.session_id,
-        server_name: typeof pendingMcpCall.data.server_name === "string" ? pendingMcpCall.data.server_name : "runtime",
+        server_name: typeof pendingMcpCall.data.server_name === "string"
+          ? pendingMcpCall.data.server_name
+          : "runtime",
         tool_name: pendingMcpCall.tool_name,
         arguments: pendingMcpCall.data,
       }, "用户拒绝");
@@ -367,13 +461,13 @@ export function AiProvider({ children }: { children: ReactNode }) {
     }
   }, [pendingMcpCall]);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       cleanup();
+      clearFallbackTimer();
       clearElapsedTimer();
     };
-  }, [cleanup, clearElapsedTimer]);
+  }, [cleanup, clearElapsedTimer, clearFallbackTimer]);
 
   return (
     <AiContext.Provider value={{
@@ -407,8 +501,12 @@ export function AiProvider({ children }: { children: ReactNode }) {
               </pre>
             </div>
             <div className="mt-4 flex justify-end gap-2">
-              <Button variant="outline" className="rounded-full" onClick={denyPendingMcpCall}>拒绝</Button>
-              <Button className="rounded-full" onClick={approvePendingMcpCall}>批准</Button>
+              <Button variant="outline" className="rounded-full" onClick={denyPendingMcpCall}>
+                拒绝
+              </Button>
+              <Button className="rounded-full" onClick={approvePendingMcpCall}>
+                批准
+              </Button>
             </div>
           </div>
         </div>
@@ -418,7 +516,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
 }
 
 export function useAI(): AiContextValue {
-  const ctx = useContext(AiContext);
-  if (!ctx) throw new Error("useAI must be used within an AiProvider");
-  return ctx;
+  const context = useContext(AiContext);
+  if (!context) throw new Error("useAI must be used within an AiProvider");
+  return context;
 }
