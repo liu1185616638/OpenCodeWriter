@@ -59,7 +59,7 @@ pub fn list_task_center_items(
     state: State<'_, DbState>,
 ) -> Result<Vec<TaskCenterItem>, String> {
     let conn = get_conn(&state)?;
-    let limit_val = limit.unwrap_or(50);
+    let limit_val = limit.unwrap_or(50).clamp(1, 200);
     let filter_val = filter.unwrap_or_else(|| "all".to_string());
 
     let status_filter = match filter_val.as_str() {
@@ -88,13 +88,13 @@ pub fn list_task_center_items(
 
     let job_status_filter = match filter_val.as_str() {
         "running" => " AND status IN ('running', 'pending')",
-        "failed" => " AND status = 'failed'",
+        "failed" => " AND status IN ('failed', 'cancelled')",
         "completed" => " AND status = 'completed'",
         _ => "",
     };
 
     let job_sql = format!(
-        "SELECT id, project_id, status, job_type, '', NULL, '', error, '', progress_current, progress_total, 0, 0, created_at, NULL \
+        "SELECT id, project_id, status, job_type, '', NULL, '', error, '', progress_current, progress_total, 0, 0, created_at, updated_at \
          FROM jobs \
          WHERE project_id = ?1{} \
          ORDER BY created_at DESC LIMIT ?2",
@@ -108,6 +108,25 @@ pub fn list_task_center_items(
         items.push(row.map_err(|e| e.to_string())?);
     }
 
+    // Snapshots are immutable completed timeline items. They are excluded from
+    // running and failed filters, but visible in all/completed views.
+    if filter_val == "all" || filter_val == "completed" {
+        let mut snapshot_stmt = conn.prepare(
+            "SELECT id, project_id, 'completed', reason, target_type, target_id, '', '', '', 0, 0, 0, length(content), created_at, created_at \
+             FROM content_snapshots \
+             WHERE project_id = ?1 \
+             ORDER BY created_at DESC LIMIT ?2",
+        ).map_err(|e| e.to_string())?;
+        let snapshot_rows = snapshot_stmt
+            .query_map(params![project_id, limit_val], |row| {
+                row_to_task_center_item(row, "snapshot")
+            })
+            .map_err(|e| e.to_string())?;
+        for row in snapshot_rows {
+            items.push(row.map_err(|e| e.to_string())?);
+        }
+    }
+
     items.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     items.truncate(limit_val as usize);
 
@@ -115,7 +134,7 @@ pub fn list_task_center_items(
 }
 
 /// Cancel an AI session by session_id.
-/// 1. Signal the cancellation flag so the Runtime loop can stop
+/// 1. Signal the cancellation handle so Runtime waits wake immediately
 /// 2. Update the generation_log status to 'cancelled'
 /// 3. Emit a dedicated ai-cancelled terminal event
 /// 4. Return the session_id for confirmation
