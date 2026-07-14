@@ -1,5 +1,7 @@
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
+
+use crate::ai::session_registry::AiSessionRegistry;
 
 #[derive(Debug, Clone, Serialize)]
 struct ChunkPayload {
@@ -19,6 +21,10 @@ struct ErrorPayload {
     error: String,
 }
 
+fn unregister_session(app: &AppHandle, session_id: &str) {
+    app.state::<AiSessionRegistry>().unregister(session_id);
+}
+
 /// Emit a streaming chunk event.
 /// chunk_type: "thinking" for reasoning content, "content" for final output text.
 pub fn emit_chunk(app: &AppHandle, session_id: &str, chunk: &str, chunk_type: &str) {
@@ -33,6 +39,7 @@ pub fn emit_chunk(app: &AppHandle, session_id: &str, chunk: &str, chunk_type: &s
 }
 
 pub fn emit_done(app: &AppHandle, session_id: &str) {
+    unregister_session(app, session_id);
     let payload = DonePayload {
         session_id: session_id.to_string(),
     };
@@ -42,12 +49,25 @@ pub fn emit_done(app: &AppHandle, session_id: &str) {
 }
 
 pub fn emit_error(app: &AppHandle, session_id: &str, error: &str) {
+    unregister_session(app, session_id);
     let payload = ErrorPayload {
         session_id: session_id.to_string(),
         error: error.to_string(),
     };
     if let Err(e) = app.emit("ai-error", &payload) {
         eprintln!("Failed to emit ai-error event: {}", e);
+    }
+}
+
+/// Cancellation is a first-class terminal event rather than a generic failure.
+pub fn emit_cancelled(app: &AppHandle, session_id: &str, reason: &str) {
+    unregister_session(app, session_id);
+    let payload = ErrorPayload {
+        session_id: session_id.to_string(),
+        error: reason.to_string(),
+    };
+    if let Err(e) = app.emit("ai-cancelled", &payload) {
+        eprintln!("Failed to emit ai-cancelled event: {}", e);
     }
 }
 
@@ -61,7 +81,6 @@ struct SkillEventPayload {
     error: String,
 }
 
-/// Emit a skill_start event when a skill begins execution.
 pub fn emit_skill_start(app: &AppHandle, session_id: &str, skill_name: &str) {
     let payload = SkillEventPayload {
         session_id: session_id.to_string(),
@@ -74,7 +93,6 @@ pub fn emit_skill_start(app: &AppHandle, session_id: &str, skill_name: &str) {
     }
 }
 
-/// Emit a skill_result event when a skill completes.
 pub fn emit_skill_result(
     app: &AppHandle,
     session_id: &str,
@@ -102,7 +120,6 @@ struct ToolEventPayload {
     data: serde_json::Value,
 }
 
-/// Emit a tool_call event when a tool is invoked.
 pub fn emit_tool_call(
     app: &AppHandle,
     session_id: &str,
@@ -121,7 +138,6 @@ pub fn emit_tool_call(
     }
 }
 
-/// Emit a tool_result event when a tool completes.
 pub fn emit_tool_result(
     app: &AppHandle,
     session_id: &str,
@@ -142,7 +158,6 @@ pub fn emit_tool_result(
     }
 }
 
-/// Emit an MCP call event when an external MCP tool is requested.
 pub fn emit_mcp_call(
     app: &AppHandle,
     session_id: &str,
@@ -161,7 +176,6 @@ pub fn emit_mcp_call(
     }
 }
 
-/// Emit an MCP result event when an external MCP tool completes or is denied.
 pub fn emit_mcp_result(
     app: &AppHandle,
     session_id: &str,

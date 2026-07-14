@@ -13,6 +13,16 @@ export async function saveContent(projectId: number, chapterId: number, content:
   return invoke("save_content", { projectId, chapterId, content });
 }
 
+export async function applyContentDraft(params: {
+  projectId: number;
+  chapterId: number;
+  content: string;
+  expectedUpdatedAt?: string | null;
+  reason: string;
+}): Promise<Content> {
+  return invoke("apply_content_draft", params);
+}
+
 export async function markContentStale(chapterId: number, stale: boolean): Promise<void> {
   return invoke("mark_content_stale", { chapterId, stale });
 }

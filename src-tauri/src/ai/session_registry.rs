@@ -1,16 +1,15 @@
-/// AiSessionRegistry — tracks active AI sessions for real cancellation.
+/// AiSessionRegistry — tracks active AI sessions and provides wakeable cancellation.
 ///
-/// Each session registers an `Arc<AtomicBool>` cancellation flag.
-/// `cancel_ai_session` sets the flag to true; the streaming loop in
-/// `AiTaskService::execute_inner` checks it before processing each delta.
-/// Sessions are removed when the task completes (success, error, or cancel).
+/// A Tokio watch channel is used instead of a passive atomic flag so callers can
+/// `select!` cancellation against both runtime creation and stream reads. Dropping
+/// the losing future aborts drop-safe HTTP/SDK requests immediately.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use tokio::sync::watch;
 
 pub struct AiSessionRegistry {
-    sessions: Mutex<HashMap<String, std::sync::Arc<AtomicBool>>>,
+    sessions: Mutex<HashMap<String, watch::Sender<bool>>>,
 }
 
 impl AiSessionRegistry {
@@ -20,26 +19,34 @@ impl AiSessionRegistry {
         }
     }
 
-    /// Register a new session and return its cancellation flag.
-    pub fn register(&self, session_id: &str) -> std::sync::Arc<AtomicBool> {
-        let flag = std::sync::Arc::new(AtomicBool::new(false));
+    /// Register a new session and return a receiver that can be awaited in select!.
+    pub fn register(&self, session_id: &str) -> watch::Receiver<bool> {
+        let (sender, receiver) = watch::channel(false);
         let mut map = self.sessions.lock().expect("session registry poisoned");
-        map.insert(session_id.to_string(), flag.clone());
-        flag
+        map.insert(session_id.to_string(), sender);
+        receiver
     }
 
     /// Signal cancellation for a session. Returns true if the session existed.
     pub fn cancel(&self, session_id: &str) -> bool {
         let map = self.sessions.lock().expect("session registry poisoned");
-        if let Some(flag) = map.get(session_id) {
-            flag.store(true, Ordering::SeqCst);
-            true
-        } else {
-            false
-        }
+        map.get(session_id)
+            .map(|sender| {
+                let _ = sender.send(true);
+                true
+            })
+            .unwrap_or(false)
     }
 
-    /// Remove a session from the registry (called when task ends).
+    /// Check cancellation before entering a database apply phase.
+    pub fn is_cancelled(&self, session_id: &str) -> bool {
+        let map = self.sessions.lock().expect("session registry poisoned");
+        map.get(session_id)
+            .map(|sender| *sender.borrow())
+            .unwrap_or(false)
+    }
+
+    /// Remove a session from the registry when the complete command lifecycle ends.
     pub fn unregister(&self, session_id: &str) {
         let mut map = self.sessions.lock().expect("session registry poisoned");
         map.remove(session_id);

@@ -8,7 +8,7 @@ import {
 } from "react";
 import { getSetting, setSetting } from "@/lib/tauri";
 
-type Density = "compact" | "comfortable" | "spacious";
+export type Density = "compact" | "comfortable" | "spacious";
 
 interface AppearanceContextValue {
   density: Density;
@@ -29,34 +29,37 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
   const [density, setDensityState] = useState<Density>("comfortable");
   const [editorFontSize, setEditorFontSizeState] = useState("16");
 
-  // Load initial settings
   useEffect(() => {
-    getSetting("ui_density").then(v => {
-      if (v && (v === "compact" || v === "comfortable" || v === "spacious")) {
-        setDensityState(v);
+    getSetting("ui_density").then((value) => {
+      if (value === "compact" || value === "comfortable" || value === "spacious") {
+        setDensityState(value);
       }
-    });
-    getSetting("editor_font_size").then(v => {
-      if (v) setEditorFontSizeState(v);
-    });
+    }).catch(() => {});
+
+    getSetting("editor_font_size").then((value) => {
+      if (value) setEditorFontSizeState(value);
+    }).catch(() => {});
   }, []);
 
-  // Apply appearance to root element
   useEffect(() => {
     const root = document.documentElement;
-    // Set data-density attribute
-    root.setAttribute("data-density", density);
-    // Set CSS variable for editor font size
-    root.style.setProperty("--editor-font-size", `${editorFontSize}px`);
-
-    // Apply density scale to various CSS variables
     const scale = DENSITY_SCALE[density];
+
+    root.setAttribute("data-density", density);
+    root.style.setProperty("--editor-font-size", `${editorFontSize}px`);
     root.style.setProperty("--density-scale", String(scale));
+    root.style.setProperty("--control-h", `${Math.round(36 * scale)}px`);
+    root.style.setProperty("--control-h-sm", `${Math.round(32 * scale)}px`);
+    root.style.setProperty("--control-h-lg", `${Math.round(40 * scale)}px`);
+    root.style.setProperty("--space-2", `${Math.round(8 * scale)}px`);
+    root.style.setProperty("--space-3", `${Math.round(12 * scale)}px`);
+    root.style.setProperty("--space-4", `${Math.round(16 * scale)}px`);
+    root.style.setProperty("--space-6", `${Math.round(24 * scale)}px`);
   }, [density, editorFontSize]);
 
-  const setDensity = useCallback(async (d: Density) => {
-    await setSetting("ui_density", d);
-    setDensityState(d);
+  const setDensity = useCallback(async (nextDensity: Density) => {
+    await setSetting("ui_density", nextDensity);
+    setDensityState(nextDensity);
   }, []);
 
   const setEditorFontSize = useCallback(async (size: string) => {
@@ -74,7 +77,7 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
 }
 
 export function useAppearance() {
-  const ctx = useContext(AppearanceContext);
-  if (!ctx) throw new Error("useAppearance must be used within AppearanceProvider");
-  return ctx;
+  const context = useContext(AppearanceContext);
+  if (!context) throw new Error("useAppearance must be used within AppearanceProvider");
+  return context;
 }

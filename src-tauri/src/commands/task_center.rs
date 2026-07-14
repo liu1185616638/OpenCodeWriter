@@ -10,7 +10,7 @@ use tauri::{AppHandle, State, Manager};
 #[derive(Debug, Serialize)]
 pub struct TaskCenterItem {
     pub id: i64,
-    pub item_type: String, // "generation" | "job" | "snapshot"
+    pub item_type: String,
     pub project_id: i64,
     pub status: String,
     pub task_type: String,
@@ -48,9 +48,6 @@ fn row_to_task_center_item(row: &rusqlite::Row<'_>, item_type: &str) -> rusqlite
     })
 }
 
-/// List unified task center items for a project.
-/// filter: "all" | "running" | "failed" | "completed"
-/// Returns items ordered by created_at DESC, limited to `limit` (default 50).
 #[tauri::command]
 pub fn list_task_center_items(
     project_id: i64,
@@ -59,10 +56,9 @@ pub fn list_task_center_items(
     state: State<'_, DbState>,
 ) -> Result<Vec<TaskCenterItem>, String> {
     let conn = get_conn(&state)?;
-    let limit_val = limit.unwrap_or(50);
+    let limit_val = limit.unwrap_or(50).clamp(1, 200);
     let filter_val = filter.unwrap_or_else(|| "all".to_string());
 
-    // Build status filter condition
     let status_filter = match filter_val.as_str() {
         "running" => " AND status IN ('started', 'running', 'pending')",
         "failed" => " AND status IN ('failed', 'timeout', 'cancelled')",
@@ -70,14 +66,10 @@ pub fn list_task_center_items(
         _ => "",
     };
 
-    // Query generation_logs
     let mut items = Vec::new();
-
     let gen_sql = format!(
         "SELECT id, project_id, status, task_type, target_type, target_id, model_name, error, session_id, 0, 0, input_chars, output_chars, started_at, ended_at \
-         FROM generation_logs \
-         WHERE project_id = ?1{} \
-         ORDER BY started_at DESC LIMIT ?2",
+         FROM generation_logs WHERE project_id = ?1{} ORDER BY started_at DESC LIMIT ?2",
         status_filter
     );
     let mut stmt = conn.prepare(&gen_sql).map_err(|e| e.to_string())?;
@@ -88,19 +80,15 @@ pub fn list_task_center_items(
         items.push(row.map_err(|e| e.to_string())?);
     }
 
-    // Query jobs (map job statuses to match filter)
     let job_status_filter = match filter_val.as_str() {
         "running" => " AND status IN ('running', 'pending')",
-        "failed" => " AND status = 'failed'",
+        "failed" => " AND status IN ('failed', 'cancelled')",
         "completed" => " AND status = 'completed'",
         _ => "",
     };
-
     let job_sql = format!(
-        "SELECT id, project_id, status, job_type, '', NULL, '', error, '', progress_current, progress_total, 0, 0, created_at, NULL \
-         FROM jobs \
-         WHERE project_id = ?1{} \
-         ORDER BY created_at DESC LIMIT ?2",
+        "SELECT id, project_id, status, job_type, '', NULL, '', error, '', progress_current, progress_total, 0, 0, created_at, updated_at \
+         FROM jobs WHERE project_id = ?1{} ORDER BY created_at DESC LIMIT ?2",
         job_status_filter
     );
     let mut stmt2 = conn.prepare(&job_sql).map_err(|e| e.to_string())?;
@@ -111,45 +99,45 @@ pub fn list_task_center_items(
         items.push(row.map_err(|e| e.to_string())?);
     }
 
-    // Sort by created_at DESC and limit
+    // Snapshots are recovery events and belong in the same timeline.
+    if filter_val == "all" || filter_val == "completed" {
+        let snapshot_sql = "SELECT id, project_id, 'completed', 'snapshot', target_type, target_id, '', reason, '', 0, 0, 0, length(content), created_at, created_at \
+                            FROM content_snapshots WHERE project_id = ?1 ORDER BY created_at DESC LIMIT ?2";
+        let mut stmt3 = conn.prepare(snapshot_sql).map_err(|e| e.to_string())?;
+        let snapshot_rows = stmt3
+            .query_map(params![project_id, limit_val], |row| row_to_task_center_item(row, "snapshot"))
+            .map_err(|e| e.to_string())?;
+        for row in snapshot_rows {
+            items.push(row.map_err(|e| e.to_string())?);
+        }
+    }
+
     items.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     items.truncate(limit_val as usize);
-
     Ok(items)
 }
 
-/// Cancel an AI session by session_id.
-/// 1. Signal the cancellation flag so the Runtime loop can stop
-/// 2. Update the generation_log status to 'cancelled'
-/// 3. Emit an ai-error event so the frontend listener can clean up
-/// 4. Return the session_id for confirmation
 #[tauri::command]
 pub async fn cancel_ai_session(
     session_id: String,
     app: AppHandle,
     state: State<'_, DbState>,
 ) -> Result<String, String> {
-    // Signal the cancellation flag to the running Runtime loop
     let registry = app.state::<AiSessionRegistry>();
     registry.cancel(&session_id);
 
-    // Update generation log status (conditional — only if still 'started')
     {
         let conn = get_conn(&state)?;
         conn.execute(
-            "UPDATE generation_logs SET status = 'cancelled', ended_at = datetime('now') WHERE session_id = ?1 AND status = 'started'",
+            "UPDATE generation_logs SET status = 'cancelled', error = '用户取消', ended_at = datetime('now') WHERE session_id = ?1 AND status = 'started'",
             params![session_id],
         ).map_err(|e| e.to_string())?;
     }
 
-    // Emit error event so frontend listener can clean up
-    events::emit_error(&app, &session_id, "用户取消了生成任务");
-
+    events::emit_cancelled(&app, &session_id, "用户取消了生成任务");
     Ok(session_id)
 }
 
-/// Retry a generation by session_id.
-/// Returns the original command and arguments so the frontend can re-invoke.
 #[derive(Debug, Serialize)]
 pub struct RetryInfo {
     pub session_id: String,
@@ -161,9 +149,6 @@ pub struct RetryInfo {
     pub model_name: String,
 }
 
-/// Look up a generation log by session_id and return retry info.
-/// The frontend is responsible for re-invoking the original command with
-/// a new session_id, since commands require typed parameters.
 #[tauri::command]
 pub fn get_retry_info(
     session_id: String,
@@ -172,8 +157,7 @@ pub fn get_retry_info(
     let conn = get_conn(&state)?;
     conn.query_row(
         "SELECT command, task_type, target_type, target_id, project_id, model_name \
-         FROM generation_logs WHERE session_id = ?1 \
-         ORDER BY started_at DESC LIMIT 1",
+         FROM generation_logs WHERE session_id = ?1 ORDER BY started_at DESC LIMIT 1",
         params![session_id],
         |row| {
             Ok(RetryInfo {
