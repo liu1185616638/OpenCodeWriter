@@ -24,7 +24,7 @@ export function useChapters(projectId: number) {
     return chapter;
   }, [projectId]);
 
-  const update = useCallback(async (id: number, fields: Partial<Pick<Chapter, 'title' | 'summary' | 'goal' | 'conflict_level' | 'hook' | 'payoff' | 'must_avoid' | 'target_word_count'>>) => {
+  const update = useCallback(async (id: number, fields: Partial<Pick<Chapter, 'title' | 'summary' | 'goal' | 'conflict_level' | 'hook' | 'payoff' | 'must_avoid' | 'target_word_count' | 'viewpoint' | 'scene' | 'cast_character_ids_json' | 'turning_point' | 'outcome' | 'status'>>) => {
     const updated = await updateChapter(id, fields);
     setChapters(prev => prev.map(c => c.id === id ? updated : c));
     return updated;

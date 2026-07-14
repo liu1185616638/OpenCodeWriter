@@ -51,7 +51,50 @@ export interface Chapter {
   payoff: string;
   must_avoid: string;
   target_word_count: number;
+  viewpoint: string;
+  scene: string;
+  cast_character_ids_json: string;
+  turning_point: string;
+  outcome: string;
+  status: string;
   updated_at: string;
+}
+
+export type ChapterStatus = 'planned' | 'drafting' | 'completed' | 'reviewed' | 'needs_revision';
+
+// Phase E: Chapter Workspace Summary
+export interface ChapterWorkspaceSummary {
+  id: number;
+  project_id: number;
+  chapter_number: number;
+  title: string;
+  summary: string;
+  sort_order: number;
+  status: string;
+  viewpoint: string;
+  conflict_level: number;
+  target_word_count: number;
+  word_count: number;
+  has_content: boolean;
+  content_stale: boolean;
+  issue_count: number;
+  latest_review_score: number;
+}
+
+// Phase E: Adjacent chapter info for content workspace
+export interface AdjacentChapterInfo {
+  id: number;
+  chapter_number: number;
+  title: string;
+}
+
+// Phase E: Content workspace aggregate
+export interface ContentWorkspace {
+  chapter: Chapter;
+  content: Content | null;
+  prev_chapter: AdjacentChapterInfo | null;
+  next_chapter: AdjacentChapterInfo | null;
+  latest_review: ChapterReview | null;
 }
 
 export interface Content {
@@ -166,6 +209,16 @@ export interface ReviewIssue {
   severity: string;
   description: string;
   location: string;
+  /** Quoted text from the original content for positioning */
+  quote?: string;
+  /** Character offset in the original content */
+  start?: number;
+  /** Character end offset in the original content */
+  end?: number;
+  /** Text immediately before the quote for context */
+  context_before?: string;
+  /** Text immediately after the quote for context */
+  context_after?: string;
 }
 
 export interface IdeaDirection {
@@ -334,4 +387,68 @@ export interface McpCallLog {
   error: string;
   call_type: string;
   created_at: string;
+}
+
+// Phase C: Workbench Query Types
+
+export interface ProjectSummary {
+  id: number;
+  name: string;
+  current_stage: string;
+  created_at: string;
+  updated_at: string;
+  genre: string;
+  total_word_count: number;
+  completed_chapters: number;
+  total_chapters: number;
+  stale_count: number;
+  failed_job_count: number;
+  has_outline: boolean;
+  has_characters: boolean;
+}
+
+export interface ProfileChangeImpact {
+  outline_stale: number;
+  chapter_stale: number;
+  content_stale: number;
+  summary: string;
+}
+
+// Phase F: Task Center Types
+
+export interface TaskCenterItem {
+  id: number;
+  item_type: "generation" | "job" | "snapshot";
+  project_id: number;
+  status: string;
+  task_type: string;
+  target_type: string;
+  target_id: number | null;
+  model_name: string;
+  error: string;
+  session_id: string;
+  progress_current: number;
+  progress_total: number;
+  input_chars: number;
+  output_chars: number;
+  created_at: string;
+  ended_at: string | null;
+}
+
+export interface RetryInfo {
+  session_id: string;
+  original_command: string;
+  task_type: string;
+  target_type: string;
+  target_id: number | null;
+  project_id: number;
+  model_name: string;
+}
+
+export interface AiTimelineEvent {
+  id: number;
+  event_type: "thinking" | "content" | "tool_call" | "tool_result" | "skill_start" | "skill_result" | "mcp_call" | "mcp_result" | "error" | "done";
+  label: string;
+  detail?: string;
+  timestamp: number;
 }

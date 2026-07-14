@@ -251,7 +251,7 @@ export function AppSidebar({
   onSelectSettingsTab: (tab: "writing-style" | "model-config" | "style-rules" | "model-routes" | "mcp-permissions" | "shortcuts" | "about") => void;
   onBackFromSettings: () => void;
   onOpenProjectProfile?: () => void;
-  onStartIdeaWizard?: () => void;
+  onStartIdeaWizard?: () => void;  // legacy: no idea text, wizard shows input step
 }) {
   const { projects } = useProjects();
   const { currentPreset } = useSettings();

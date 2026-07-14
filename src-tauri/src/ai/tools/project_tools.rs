@@ -119,7 +119,8 @@ pub fn get_chapters(
     let mut stmt = conn
         .prepare(
             "SELECT id, project_id, chapter_number, title, summary, sort_order, goal, \
-             conflict_level, hook, payoff, must_avoid, target_word_count, updated_at \
+             conflict_level, hook, payoff, must_avoid, target_word_count, \
+             viewpoint, scene, cast_character_ids_json, turning_point, outcome, status, updated_at \
              FROM chapters WHERE project_id = ?1 ORDER BY sort_order",
         )
         .map_err(|e| e.to_string())?;
@@ -139,7 +140,13 @@ pub fn get_chapters(
                 payoff: row.get(9)?,
                 must_avoid: row.get(10)?,
                 target_word_count: row.get(11)?,
-                updated_at: row.get(12)?,
+                viewpoint: row.get(12)?,
+                scene: row.get(13)?,
+                cast_character_ids_json: row.get(14)?,
+                turning_point: row.get(15)?,
+                outcome: row.get(16)?,
+                status: row.get(17)?,
+                updated_at: row.get(18)?,
             })
         })
         .map_err(|e| e.to_string())?;

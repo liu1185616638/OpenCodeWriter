@@ -18,3 +18,5 @@ pub mod style_rules;
 pub mod model_routes;
 pub mod jobs;
 pub mod runtime_tools;
+pub mod workbench_queries;
+pub mod task_center;

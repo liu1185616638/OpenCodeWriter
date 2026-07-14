@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Button } from "@/components/ui/button";
@@ -21,7 +21,8 @@ interface AiChunkPayload {
   chunk_type: string;
 }
 
-export function IdeaToProjectWizard({ onComplete, onCancel }: {
+export function IdeaToProjectWizard({ initialIdea, onComplete, onCancel }: {
+  initialIdea?: string;
   onComplete: (project: Project) => void;
   onCancel: () => void;
 }) {
@@ -29,13 +30,14 @@ export function IdeaToProjectWizard({ onComplete, onCancel }: {
   const { create } = useProjects();
 
   const [step, setStep] = useState<WizardStep>("input");
-  const [idea, setIdea] = useState("");
+  const [idea, setIdea] = useState(initialIdea ?? "");
   const [directions, setDirections] = useState<IdeaDirection[]>([]);
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const [generating, setGenerating] = useState(false);
   const [thinkingContent, setThinkingContent] = useState("");
   const [streamedContent, setStreamedContent] = useState("");
   const unlistenRef = useRef<UnlistenFn[]>([]);
+  const autoTriggeredRef = useRef(false);
 
   const handleGenerateDirections = useCallback(async () => {
     if (!currentPreset || !idea.trim()) return;
@@ -93,6 +95,14 @@ export function IdeaToProjectWizard({ onComplete, onCancel }: {
       unlistenRef.current = [];
     }
   }, [currentPreset, idea]);
+
+  // Auto-trigger direction generation when initialIdea is provided from homepage
+  useEffect(() => {
+    if (initialIdea && initialIdea.trim() && currentPreset && !autoTriggeredRef.current) {
+      autoTriggeredRef.current = true;
+      handleGenerateDirections();
+    }
+  }, [initialIdea, currentPreset, handleGenerateDirections]);
 
   const handleSelectDirection = (idx: number) => {
     setSelectedIdx(idx);

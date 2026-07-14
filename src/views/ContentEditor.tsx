@@ -1,9 +1,15 @@
+/**
+ * ContentEditor — Carbon Frost 正文工作室 (Phase E / V8)
+ *
+ * 左侧章节导航（210px，可收起）
+ * 中央正文编辑器（最大阅读宽度 760px，16px 字体，1.75 行高）
+ * 右侧检查器（320px，可切换：上下文/审核/后护理/快照）
+ * 专注模式隐藏导航和检查器
+ */
+
 import { useEffect, useState, useCallback, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Badge } from "@/components/ui/badge";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useChapters } from "@/hooks/useChapters";
 import { useContent } from "@/hooks/useContent";
@@ -11,47 +17,47 @@ import { useSettings } from "@/hooks/useSettings";
 import { useAI } from "@/contexts/AIContext";
 import { useStopwords } from "@/hooks/useStopwords";
 import { useAppEvents } from "@/hooks/useAppEvents";
+import { useWorkbench } from "@/app/WorkbenchContext";
 import { StaleAlert } from "@/components/shared/StaleAlert";
 import { FlowGuide } from "@/components/flow/FlowGuide";
 import { StreamingView, stripThinking } from "@/components/shared/StreamingView";
 import { STOPWORD_SUGGESTIONS } from "@/lib/stopwords";
-import { WorkspacePageLayout } from "@/components/editor/WorkspacePageLayout";
-import { AppScrollArea } from "@/components/shared/AppScrollArea";
-import { EditorActionBar } from "@/components/editor/EditorActionBar";
-import { ModelPresetSelect } from "@/components/editor/ModelPresetSelect";
-import { EditorStatusText } from "@/components/editor/EditorStatusText";
+import { Badge } from "@/components/ui/badge";
 import { GenerationStatusBar } from "@/components/ai/GenerationStatusBar";
 import { GenerateConfirmDialog } from "@/components/ai/GenerateConfirmDialog";
 import { ChapterQualityPanel } from "@/components/ai/ChapterQualityPanel";
 import { AftercarePanel } from "@/components/ai/AftercarePanel";
 import type { GenerationApplyMode } from "@/types/ai";
-import type { Project } from "@/types";
-import { saveContent, batchGenerateChapters } from "@/lib/tauri";
-import { Save, Sparkles, Square, WandSparkles, ClipboardCheck, HeartPulse, Zap, CheckCircle2 } from "lucide-react";
+import type { Project, ContentWorkspace } from "@/types";
+import { saveContent, batchGenerateChapters, getContentWorkspace } from "@/lib/tauri";
+import { Save, Sparkles, Square, WandSparkles, ClipboardCheck, HeartPulse, Zap, CheckCircle2, PanelLeft, PanelRight, Focus, ChevronLeft, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
+
+type InspectorTab = "context" | "review" | "aftercare" | "snapshots";
 
 export function ContentEditor({ project }: { project: Project }) {
   const { chapters, loading: chaptersLoading, load: loadChapters } = useChapters(project.id);
   const [selectedChapterId, setSelectedChapterId] = useState<number | null>(null);
   const { content, saving, load: loadContent, save } = useContent(selectedChapterId ?? 0);
   const { currentPreset, currentPresetId, switchPreset, presets } = useSettings();
-  const { generating, streamedContent, thinkingContent, generatingStage, error, generate, cancel, generationMeta, generatedCharCount, elapsedMs } = useAI();
+  const { generating, streamedContent, thinkingContent, generatingStage, generate, cancel, generationMeta, generatedCharCount, elapsedMs } = useAI();
+  const { focusMode, toggleFocusMode } = useWorkbench();
   const [text, setText] = useState("");
   const [showGenerateConfirm, setShowGenerateConfirm] = useState(false);
-  const [showQualityPanel, setShowQualityPanel] = useState(false);
-  const [showAftercarePanel, setShowAftercarePanel] = useState(false);
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("context");
+  const [chapterRailOpen, setChapterRailOpen] = useState(true);
+  const [inspectorOpen, setInspectorOpen] = useState(true);
   const [showBatchGenerateDialog, setShowBatchGenerateDialog] = useState(false);
   const [batchGenerating, setBatchGenerating] = useState(false);
   const [selectedChapterIds, setSelectedChapterIds] = useState<number[]>([]);
+  const [workspace, setWorkspace] = useState<ContentWorkspace | null>(null);
   const applyModeRef = useRef<GenerationApplyMode>("replace");
 
   const stopwords = useStopwords(text);
 
-  const hasNoChapters = !chaptersLoading && chapters.length === 0;
-
   useEffect(() => { loadChapters(); }, [loadChapters]);
 
-  // 章节加载完成后，恢复上次选中的章节
+  // Restore last selected chapter
   useEffect(() => {
     if (chaptersLoading || chapters.length === 0 || selectedChapterId !== null) return;
     const saved = localStorage.getItem(`lastChapter_${project.id}`);
@@ -62,22 +68,23 @@ export function ContentEditor({ project }: { project: Project }) {
         return;
       }
     }
-    // 无存储记录时默认选中第一章
     setSelectedChapterId(chapters[0].id);
   }, [chaptersLoading, chapters, project.id, selectedChapterId]);
 
-  // 记录当前选中章节，供下次恢复
   useEffect(() => {
     if (selectedChapterId !== null) {
       localStorage.setItem(`lastChapter_${project.id}`, String(selectedChapterId));
     }
   }, [selectedChapterId, project.id]);
 
+  // Load content workspace data
   useEffect(() => {
     if (selectedChapterId) {
       loadContent();
+      getContentWorkspace(selectedChapterId).then(setWorkspace).catch(() => setWorkspace(null));
     } else {
       setText("");
+      setWorkspace(null);
     }
   }, [selectedChapterId, loadContent]);
 
@@ -89,29 +96,25 @@ export function ContentEditor({ project }: { project: Project }) {
     }
   }, [content]);
 
+  // Sync streamed text during generation
   useEffect(() => {
-    // During content or repair generation: sync streamed text for live display
-    // After generation ends: auto-save effect handles saving + reload
     if (generating && (generatingStage === "content" || generatingStage === "repair")) {
       setText(streamedContent);
     }
   }, [streamedContent, generating, generatingStage]);
 
-  // 生成开始时锁定目标章节和原始文本，避免切换章节后保错位置
+  // Auto-save when content generation finishes
   const prevGeneratingRef = useRef(false);
   const generatingChapterIdRef = useRef<number | null>(null);
   const textBeforeGenerationRef = useRef("");
   const generatingStageRef = useRef<string | undefined>(undefined);
 
-  // Auto-save when content generation finishes (not for review/repair)
   useEffect(() => {
     if (prevGeneratingRef.current && !generating) {
-      // 立即重置，防止 deps 变化时重复触发
       prevGeneratingRef.current = false;
       const stage = generatingStageRef.current;
       generatingStageRef.current = undefined;
 
-      // Only auto-save for content/polish stage, not review or repair
       if (stage !== "content") return;
 
       const chapterId = generatingChapterIdRef.current;
@@ -146,8 +149,8 @@ export function ContentEditor({ project }: { project: Project }) {
   const startGenerate = useCallback(async (mode: GenerationApplyMode) => {
     setShowGenerateConfirm(false);
     applyModeRef.current = mode;
-    generatingChapterIdRef.current = selectedChapterId;   // 锁定目标章节
-    textBeforeGenerationRef.current = text;               // 锁定追加模式的原始文本
+    generatingChapterIdRef.current = selectedChapterId;
+    textBeforeGenerationRef.current = text;
     if (mode === "replace") setText("");
     await generate({
       command: "generate_content",
@@ -157,9 +160,7 @@ export function ContentEditor({ project }: { project: Project }) {
         chapterId: selectedChapterId!,
         presetId: currentPreset!.id,
       },
-      onComplete: () => {
-        // auto-save effect handles saving
-      },
+      onComplete: () => {},
       onError: (err) => {
         toast.error("生成失败", { description: err });
       },
@@ -178,7 +179,7 @@ export function ContentEditor({ project }: { project: Project }) {
   const handlePolish = useCallback(async () => {
     if (!currentPreset || !selectedChapterId) return;
     applyModeRef.current = "replace";
-    generatingChapterIdRef.current = selectedChapterId;   // 锁定目标章节
+    generatingChapterIdRef.current = selectedChapterId;
     textBeforeGenerationRef.current = text;
     await generate({
       command: "polish_content",
@@ -188,9 +189,7 @@ export function ContentEditor({ project }: { project: Project }) {
         chapterId: selectedChapterId,
         presetId: currentPreset.id,
       },
-      onComplete: () => {
-        // Auto-save effect handles save + toast
-      },
+      onComplete: () => {},
       onError: (err) => {
         toast.error("润色失败", { description: err });
       },
@@ -235,286 +234,472 @@ export function ContentEditor({ project }: { project: Project }) {
   const selectedChapter = chapters.find(c => c.id === selectedChapterId);
   const charCount = text.length;
 
-  if (chaptersLoading) return <div className="p-6 text-muted-foreground">加载中...</div>;
+  if (chaptersLoading) return <div className="flex-1 flex items-center justify-center" style={{ color: "var(--text-muted)" }}>加载中...</div>;
 
   return (
     <>
-    <WorkspacePageLayout
-      title={selectedChapter ? `第${selectedChapter.chapter_number}章 ${selectedChapter.title || "未命名"}` : "正文"}
-      status={
-        generating && generatingStage === "content" ? (
-          <GenerationStatusBar
-            stageLabel="正文"
-            modelName={generationMeta?.modelName}
-            charCount={generatedCharCount}
-            elapsedMs={elapsedMs}
-          />
-        ) : (
-          <EditorStatusText
-            generating={generating}
-            idleLabel={selectedChapterId ? `${charCount.toLocaleString()} 字${stopwords.length > 0 ? ` | AI 呜: ${stopwords.length} 处标记` : ""}` : ""}
-          />
-        )
-      }
-      alerts={
-        <>
-          <FlowGuide stage="content" input={{ chapterCount: chapters.length, selectedChapterId }} />
-          <StaleAlert projectId={project.id} targetType="contents" onRegenerate={handleGenerateClick} />
-          {hasNoChapters && (
-            <div className="mx-4 mb-2 sm:mx-6">
-              <Alert>
-                <AlertDescription>请先创建章节目录，再进行正文编辑</AlertDescription>
-              </Alert>
-            </div>
-          )}
-        </>
-      }
-      error={error}
-      actionBar={
-        <EditorActionBar>
-          {generating ? (
-            <Button
-              variant="destructive"
-              onClick={cancel}
-              className="rounded-full px-4 py-2.5 gap-1.5"
-            >
-              <Square className="h-4 w-4" />停止生成
-            </Button>
-          ) : (
-            <Button
-              onClick={handleGenerateClick}
-              disabled={!currentPreset || !selectedChapterId}
-              className="rounded-full px-4 py-2.5 gap-1.5"
-            >
-              <Sparkles className="h-4 w-4" />
-              AI 生成正文
-            </Button>
-          )}
-
-          <Button
-            variant="outline"
-            onClick={() => setShowBatchGenerateDialog(true)}
-            disabled={!currentPreset || chapters.length === 0}
-            className="rounded-full px-4 py-2.5 gap-1.5"
-          >
-            <Zap className="h-4 w-4" />
-            批量生成
-          </Button>
-
-          <ModelPresetSelect
-            value={currentPresetId ?? null}
-            presets={presets}
-            onChange={(v) => switchPreset(v)}
-            placeholder="选择模型"
-          />
-
-          {generating ? null : (
-            <Button
-              variant="outline"
-              onClick={handlePolish}
-              disabled={!currentPreset || !selectedChapterId || !text.trim()}
-              className="rounded-full px-4 py-2.5 gap-1.5"
-            >
-              <WandSparkles className="h-4 w-4" />
-              涤色打磨
-            </Button>
-          )}
-
-          <Button
-            variant="outline"
-            onClick={() => {
-              setShowAftercarePanel(prev => !prev);
-              setShowQualityPanel(false);
-            }}
-            disabled={!selectedChapterId}
-            className={`rounded-full px-4 py-2.5 gap-1.5 ${showAftercarePanel ? "bg-accent" : ""}`}
-          >
-            <HeartPulse className="h-4 w-4" />
-            后护理
-          </Button>
-
-          <Button
-            variant="outline"
-            onClick={() => {
-              setShowQualityPanel(prev => !prev);
-              setShowAftercarePanel(false);
-            }}
-            disabled={!selectedChapterId}
-            className={`rounded-full px-4 py-2.5 gap-1.5 ${showQualityPanel ? "bg-accent" : ""}`}
-          >
-            <ClipboardCheck className="h-4 w-4" />
-            质量审核
-          </Button>
-
-          <Button
-            variant="outline"
-            onClick={handleSave}
-            disabled={saving || !selectedChapterId || generating}
-            className="rounded-full px-4 py-2.5 gap-1.5"
-          >
-            <Save className="h-4 w-4" />
-            保存
-          </Button>
-        </EditorActionBar>
-      }
-    >
-      {/* Main area: chapter list + editor + quality panel */}
-      <div className="flex min-h-0 min-w-0 h-full overflow-hidden">
-        {/* Chapter list */}
-        <ScrollArea className="w-48 shrink-0 border-r border-border">
-          <div className="space-y-1 px-4 py-5 pr-2">
-            {chapters.map((chapter) => (
-              <button
-                key={chapter.id}
-                className={`w-full min-w-0 rounded-2xl px-3 py-2 text-left text-sm transition-colors ${
-                  selectedChapterId === chapter.id
-                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                    : "text-foreground hover:bg-accent"
-                }`}
-                onClick={() => setSelectedChapterId(chapter.id)}
-                title={`第${chapter.chapter_number}章 ${chapter.title || "未命名"}`}
-              >
-                <span className="block truncate">第{chapter.chapter_number}章 {chapter.title || "未命名"}</span>
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        {/* ── Left: Chapter Rail (210px, collapsible) ── */}
+        {chapterRailOpen && !focusMode && (
+          <div className="shrink-0 flex flex-col overflow-hidden" style={{ width: 210, borderRight: "1px solid var(--border)", backgroundColor: "var(--surface)" }}>
+            {/* Chapter rail header */}
+            <div className="flex items-center justify-between shrink-0" style={{ height: 40, padding: "0 12px", borderBottom: "1px solid var(--border)" }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>章节</span>
+              <button onClick={() => setChapterRailOpen(false)} title="收起章节列表" style={{ padding: 2 }}>
+                <PanelLeft className="h-3.5 w-3.5" style={{ color: "var(--text-muted)" }} />
               </button>
-            ))}
-          </div>
-        </ScrollArea>
-
-        {/* Content editor — streaming view when generating, textarea otherwise */}
-        <AppScrollArea>
-          <div className="flex min-h-full w-full min-w-0 flex-col">
-            {selectedChapterId ? (
-              <>
-                {generating && generatingStage !== "review" ? (
-                  <StreamingView
-                    content={text}
-                    thinkingContent={thinkingContent}
-                    generating={generating}
-                  />
-                ) : (
-                  <Textarea
-                    value={text}
-                    onChange={(e) => setText(e.target.value)}
-                    className="app-scrollbar min-h-[420px] w-full flex-1 resize-none overflow-y-auto bg-background border-none shadow-none focus-visible:ring-0 text-base leading-relaxed"
-                    placeholder="正文内容..."
-                  />
-                )}
-                {stopwords.length > 0 && !generating && (
-                  <div className="flex flex-wrap gap-1.5 mt-3 p-3 bg-card rounded-2xl">
-                    <span className="text-xs text-muted-foreground mr-2">高频词：</span>
-                    {stopwords.map(({ word, count }) => (
-                      <span key={word} className="group relative">
-                        <Badge
-                          variant="secondary"
-                          className="text-xs cursor-help border border-highlight/30 rounded-full px-2.5 py-0.5"
-                        >
-                          {word} ×{count}
-                        </Badge>
-                        {STOPWORD_SUGGESTIONS[word] && (
-                          <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 hidden group-hover:flex flex-col items-center z-50">
-                            <span className="bg-popover text-popover-foreground text-xs rounded-xl px-3 py-1.5 shadow-lg border whitespace-nowrap">
-                              建议：{STOPWORD_SUGGESTIONS[word].join("、")}
-                            </span>
-                            <span className="w-2 h-2 bg-popover border-r border-b rotate-45 -mt-1" />
-                          </span>
-                        )}
+            </div>
+            {/* Chapter list */}
+            <div className="flex-1 overflow-y-auto">
+              {chapters.map((chapter) => {
+                const isSelected = selectedChapterId === chapter.id;
+                return (
+                  <button
+                    key={chapter.id}
+                    onClick={() => setSelectedChapterId(chapter.id)}
+                    className="w-full text-left transition-colors"
+                    style={{
+                      padding: "8px 12px",
+                      borderBottom: "1px solid var(--border)",
+                      backgroundColor: isSelected ? "var(--surface-selected)" : "transparent",
+                      borderLeft: isSelected ? "2px solid var(--accent)" : "2px solid transparent",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontFamily: "var(--font-data)", fontSize: 12, color: "var(--text-muted)", minWidth: 20 }}>
+                        {chapter.chapter_number}
                       </span>
-                    ))}
-                  </div>
-                )}
-              </>
+                      <span style={{
+                        fontSize: 13,
+                        fontWeight: isSelected ? 600 : 400,
+                        color: isSelected ? "var(--text-primary)" : "var(--text-secondary)",
+                        overflow: "hidden",
+                        whiteSpace: "nowrap",
+                        textOverflow: "ellipsis",
+                        flex: 1,
+                      }}>
+                        {chapter.title || "未命名"}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+              {chapters.length === 0 && (
+                <div className="flex items-center justify-center" style={{ height: 80, color: "var(--text-muted)" }}>
+                  <span style={{ fontSize: 12 }}>暂无章节</span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Center: Manuscript Editor ── */}
+        <div className="flex-1 min-w-0 flex flex-col overflow-hidden" style={{ backgroundColor: "var(--canvas)" }}>
+          {/* Editor toolbar */}
+          <div className="flex items-center justify-between shrink-0" style={{ height: 44, padding: "0 16px", borderBottom: "1px solid var(--border)" }}>
+            <div className="flex items-center gap-3">
+              {!chapterRailOpen && !focusMode && (
+                <button onClick={() => setChapterRailOpen(true)} title="展开章节列表" style={{ padding: 4 }}>
+                  <PanelLeft className="h-4 w-4" style={{ color: "var(--text-muted)" }} />
+                </button>
+              )}
+              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)" }}>
+                {selectedChapter ? `第${selectedChapter.chapter_number}章 ${selectedChapter.title || "未命名"}` : "正文"}
+              </span>
+              {saving && <span style={{ fontSize: 11, color: "var(--text-muted)" }}>保存中...</span>}
+              {!saving && content && <span style={{ fontSize: 11, color: "var(--success)" }}>已保存</span>}
+            </div>
+            <div className="flex items-center gap-2">
+              {generating && generatingStage === "content" ? (
+                <GenerationStatusBar
+                  stageLabel="正文"
+                  modelName={generationMeta?.modelName}
+                  charCount={generatedCharCount}
+                  elapsedMs={elapsedMs}
+                />
+              ) : (
+                <>
+                  <span style={{ fontFamily: "var(--font-data)", fontSize: 12, color: "var(--text-muted)" }}>
+                    {charCount.toLocaleString()} 字
+                  </span>
+                  {stopwords.length > 0 && (
+                    <span style={{ fontSize: 11, color: "var(--warning)" }}>
+                      高频词 {stopwords.length}
+                    </span>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Action bar */}
+          <div className="flex items-center gap-2 shrink-0" style={{ height: 44, padding: "0 16px", borderBottom: "1px solid var(--border)" }}>
+            {generating ? (
+              <Button variant="destructive" size="sm" onClick={cancel} style={{ height: 30, borderRadius: "var(--radius-sm)", fontSize: 12, gap: 4 }}>
+                <Square className="h-3.5 w-3.5" />停止
+              </Button>
             ) : (
-              <p className="text-muted-foreground text-center py-8">选择左侧章节开始编辑</p>
+              <Button size="sm" onClick={handleGenerateClick} disabled={!currentPreset || !selectedChapterId} style={{ height: 30, borderRadius: "var(--radius-sm)", fontSize: 12, gap: 4 }}>
+                <Sparkles className="h-3.5 w-3.5" />生成正文
+              </Button>
+            )}
+            <Button variant="outline" size="sm" onClick={handlePolish} disabled={!currentPreset || !selectedChapterId || !text.trim() || generating} style={{ height: 30, borderRadius: "var(--radius-sm)", fontSize: 12, gap: 4 }}>
+              <WandSparkles className="h-3.5 w-3.5" />润色
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setShowBatchGenerateDialog(true)} disabled={!currentPreset || chapters.length === 0} style={{ height: 30, borderRadius: "var(--radius-sm)", fontSize: 12, gap: 4 }}>
+              <Zap className="h-3.5 w-3.5" />批量生成
+            </Button>
+            <Button variant="outline" size="sm" onClick={handleSave} disabled={saving || !selectedChapterId || generating} style={{ height: 30, borderRadius: "var(--radius-sm)", fontSize: 12, gap: 4 }}>
+              <Save className="h-3.5 w-3.5" />保存
+            </Button>
+            <div className="flex-1" />
+            <button
+              onClick={() => setInspectorTab("review")}
+              title="质量审核"
+              className="flex items-center gap-1"
+              style={{
+                padding: "4px 8px",
+                borderRadius: "var(--radius-sm)",
+                fontSize: 12,
+                color: inspectorTab === "review" ? "var(--accent)" : "var(--text-muted)",
+                backgroundColor: inspectorTab === "review" ? "var(--accent-soft)" : "transparent",
+              }}
+            >
+              <ClipboardCheck className="h-3.5 w-3.5" />审核
+            </button>
+            <button
+              onClick={() => setInspectorTab("aftercare")}
+              title="后护理"
+              className="flex items-center gap-1"
+              style={{
+                padding: "4px 8px",
+                borderRadius: "var(--radius-sm)",
+                fontSize: 12,
+                color: inspectorTab === "aftercare" ? "var(--accent)" : "var(--text-muted)",
+                backgroundColor: inspectorTab === "aftercare" ? "var(--accent-soft)" : "transparent",
+              }}
+            >
+              <HeartPulse className="h-3.5 w-3.5" />后护理
+            </button>
+            {!focusMode && (
+              <button onClick={toggleFocusMode} title="专注模式" style={{ padding: 4 }}>
+                <Focus className="h-4 w-4" style={{ color: "var(--text-muted)" }} />
+              </button>
+            )}
+            {focusMode && (
+              <Button variant="outline" size="sm" onClick={toggleFocusMode} style={{ height: 30, borderRadius: "var(--radius-sm)", fontSize: 12, gap: 4 }}>
+                退出专注
+              </Button>
             )}
           </div>
-        </AppScrollArea>
 
-        {/* Quality panel (collapsible right sidebar) */}
-        {showQualityPanel && !showAftercarePanel && (
-          <div className="w-72 shrink-0 border-l border-border">
-            <ChapterQualityPanel
-              projectId={project.id}
-              chapterId={selectedChapterId}
-              hasContent={text.trim().length > 0}
-              onContentRepaired={(repairedText) => setText(repairedText)}
-            />
-          </div>
-        )}
-
-        {/* Aftercare panel (collapsible right sidebar) */}
-        {showAftercarePanel && (
-          <div className="w-72 shrink-0 border-l border-border">
-            <AftercarePanel
-              project={project}
-              chapterId={selectedChapterId}
-              hasContent={text.trim().length > 0}
-            />
-          </div>
-        )}
-      </div>
-    </WorkspacePageLayout>
-    <GenerateConfirmDialog
-      open={showGenerateConfirm}
-      onOpenChange={setShowGenerateConfirm}
-      onConfirm={startGenerate}
-    />
-
-    <Dialog open={showBatchGenerateDialog} onOpenChange={setShowBatchGenerateDialog}>
-      <DialogContent className="sm:max-w-[640px]">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Zap className="h-4 w-4" />
-            批量生成正文
-          </DialogTitle>
-        </DialogHeader>
-
-        <div className="max-h-[360px] overflow-y-auto">
-          <div className="space-y-2">
-            {chapters.map((chapter) => (
-              <div
-                key={chapter.id}
-                className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
-                  selectedChapterIds.includes(chapter.id)
-                    ? "bg-primary/10 border-primary"
-                    : "border-border hover:bg-accent"
-                }`}
-                onClick={() => toggleChapterSelection(chapter.id)}
-              >
-                <div className={`w-5 h-5 rounded border flex items-center justify-center ${
-                  selectedChapterIds.includes(chapter.id)
-                    ? "bg-primary border-primary text-primary-foreground"
-                    : "border-border"
-                }`}>
-                  {selectedChapterIds.includes(chapter.id) && <CheckCircle2 className="h-3.5 w-3.5" />}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium truncate">
-                    第{chapter.chapter_number}章 {chapter.title || "未命名"}
-                  </p>
-                  {chapter.summary && (
-                    <p className="text-xs text-muted-foreground line-clamp-1">
-                      {chapter.summary}
-                    </p>
-                  )}
-                </div>
+          {/* Editor area */}
+          <div className="flex-1 overflow-y-auto">
+            {selectedChapterId ? (
+              <div className="flex flex-col" style={{ minHeight: "100%" }}>
+                {/* Flow guide */}
+                {!focusMode && (
+                  <div style={{ padding: "8px 16px 0" }}>
+                    <FlowGuide stage="content" input={{ chapterCount: chapters.length, selectedChapterId }} />
+                  </div>
+                )}
+                {generating && generatingStage !== "review" ? (
+                  <div style={{ maxWidth: 760, margin: "0 auto", padding: "24px 32px", width: "100%" }}>
+                    <StreamingView
+                      content={text}
+                      thinkingContent={thinkingContent}
+                      generating={generating}
+                    />
+                  </div>
+                ) : (
+                  <div style={{ maxWidth: 760, margin: "0 auto", padding: "24px 32px", width: "100%", flex: 1 }}>
+                    <Textarea
+                      value={text}
+                      onChange={(e) => setText(e.target.value)}
+                      className="app-scrollbar"
+                      style={{
+                        minHeight: "420px",
+                        width: "100%",
+                        resize: "none",
+                        backgroundColor: "transparent",
+                        border: "none",
+                        boxShadow: "none",
+                        outline: "none",
+                        fontSize: 16,
+                        lineHeight: 1.75,
+                        color: "var(--text-primary)",
+                        fontFamily: "var(--font-ui)",
+                      }}
+                      placeholder="正文内容..."
+                    />
+                    {/* Stopword highlights */}
+                    {stopwords.length > 0 && !generating && (
+                      <div className="flex flex-wrap gap-1.5" style={{ marginTop: 16, padding: 12, borderRadius: "var(--radius-md)", backgroundColor: "var(--surface)" }}>
+                        <span style={{ fontSize: 11, color: "var(--text-muted)", marginRight: 4 }}>高频词：</span>
+                        {stopwords.map(({ word, count }) => (
+                          <span key={word} className="group relative">
+                            <Badge
+                              variant="secondary"
+                              style={{ fontSize: 11, cursor: "help", border: "1px solid var(--warning-soft)", borderRadius: "var(--radius-sm)", padding: "2px 6px", backgroundColor: "var(--warning-soft)", color: "var(--warning)" }}
+                            >
+                              {word} ×{count}
+                            </Badge>
+                            {STOPWORD_SUGGESTIONS[word] && (
+                              <span style={{ position: "absolute", bottom: "100%", left: "50%", transform: "translateX(-50%)", marginBottom: 4, display: "none" }} className="group-hover:flex">
+                                <span style={{ backgroundColor: "var(--surface-raised)", color: "var(--text-primary)", fontSize: 11, borderRadius: "var(--radius-sm)", padding: "4px 8px", border: "1px solid var(--border)", whiteSpace: "nowrap" }}>
+                                  建议：{STOPWORD_SUGGESTIONS[word].join("、")}
+                                </span>
+                              </span>
+                            )}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {/* Stale alert */}
+                    {!focusMode && (
+                      <div style={{ marginTop: 8 }}>
+                        <StaleAlert projectId={project.id} targetType="contents" onRegenerate={handleGenerateClick} />
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-            ))}
+            ) : (
+              <div className="flex items-center justify-center" style={{ height: "100%", color: "var(--text-muted)" }}>
+                <span style={{ fontSize: 14 }}>选择左侧章节开始编辑</span>
+              </div>
+            )}
           </div>
+
+          {/* Bottom navigation (adjacent chapters) */}
+          {workspace && !focusMode && (
+            <div className="flex items-center justify-between shrink-0" style={{ height: 40, borderTop: "1px solid var(--border)", backgroundColor: "var(--surface)", padding: "0 16px" }}>
+              {workspace.prev_chapter ? (
+                <button
+                  onClick={() => setSelectedChapterId(workspace.prev_chapter!.id)}
+                  className="flex items-center gap-1 transition-colors hover:opacity-80"
+                  style={{ fontSize: 12, color: "var(--text-secondary)" }}
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                  第{workspace.prev_chapter.chapter_number}章 {workspace.prev_chapter.title || "未命名"}
+                </button>
+              ) : <span />}
+              {workspace.next_chapter ? (
+                <button
+                  onClick={() => setSelectedChapterId(workspace.next_chapter!.id)}
+                  className="flex items-center gap-1 transition-colors hover:opacity-80"
+                  style={{ fontSize: 12, color: "var(--text-secondary)" }}
+                >
+                  第{workspace.next_chapter.chapter_number}章 {workspace.next_chapter.title || "未命名"}
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </button>
+              ) : <span />}
+            </div>
+          )}
         </div>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setShowBatchGenerateDialog(false)}>
-            取消
-          </Button>
-          <Button
-            onClick={handleBatchGenerate}
-            disabled={batchGenerating || selectedChapterIds.length === 0}
+        {/* ── Right: Inspector (320px) ── */}
+        {inspectorOpen && !focusMode && (
+          <div className="shrink-0 flex flex-col overflow-hidden" style={{ width: 320, borderLeft: "1px solid var(--border)", backgroundColor: "var(--surface)" }}>
+            {/* Inspector header with tabs */}
+            <div className="flex items-center shrink-0" style={{ height: 40, borderBottom: "1px solid var(--border)" }}>
+              {(["context", "review", "aftercare", "snapshots"] as InspectorTab[]).map(tab => (
+                <button
+                  key={tab}
+                  onClick={() => setInspectorTab(tab)}
+                  style={{
+                    flex: 1,
+                    height: "100%",
+                    fontSize: 12,
+                    fontWeight: inspectorTab === tab ? 600 : 400,
+                    color: inspectorTab === tab ? "var(--text-primary)" : "var(--text-muted)",
+                    borderBottom: inspectorTab === tab ? "2px solid var(--accent)" : "2px solid transparent",
+                    backgroundColor: "transparent",
+                  }}
+                >
+                  {tab === "context" ? "上下文" : tab === "review" ? "审核" : tab === "aftercare" ? "后护理" : "快照"}
+                </button>
+              ))}
+            </div>
+
+            {/* Inspector content */}
+            <div className="flex-1 overflow-y-auto">
+              {inspectorTab === "context" && workspace && (
+                <div style={{ padding: 16 }}>
+                  <div className="flex flex-col" style={{ gap: 14 }}>
+                    <div>
+                      <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>章节目标</label>
+                      <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 4 }}>{workspace.chapter.goal || "未设定"}</p>
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>视角</label>
+                      <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 4 }}>{workspace.chapter.viewpoint || "未设定"}</p>
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>场景</label>
+                      <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 4 }}>{workspace.chapter.scene || "未设定"}</p>
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>冲突等级</label>
+                      <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 4 }}>{workspace.chapter.conflict_level} / 5</p>
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>目标字数</label>
+                      <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 4 }}>{workspace.chapter.target_word_count.toLocaleString()} 字</p>
+                    </div>
+                    {workspace.chapter.hook && (
+                      <div>
+                        <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>开篇钩子</label>
+                        <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 4 }}>{workspace.chapter.hook}</p>
+                      </div>
+                    )}
+                    {workspace.chapter.payoff && (
+                      <div>
+                        <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>收束回报</label>
+                        <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 4 }}>{workspace.chapter.payoff}</p>
+                      </div>
+                    )}
+                    {workspace.chapter.must_avoid && (
+                      <div>
+                        <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>禁止事项</label>
+                        <p style={{ fontSize: 13, color: "var(--warning)", marginTop: 4 }}>{workspace.chapter.must_avoid}</p>
+                      </div>
+                    )}
+                    {workspace.chapter.turning_point && (
+                      <div>
+                        <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>转折点</label>
+                        <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 4 }}>{workspace.chapter.turning_point}</p>
+                      </div>
+                    )}
+                    {workspace.latest_review && (
+                      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+                        <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>最新审核</label>
+                        <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 4 }}>
+                          总分：{workspace.latest_review.overall_score}
+                          {workspace.latest_review.issues_json !== "[]" && workspace.latest_review.issues_json !== "" && (
+                            <span style={{ marginLeft: 8, color: "var(--warning)" }}>
+                              {(() => {
+                                try { return JSON.parse(workspace.latest_review.issues_json).length; } catch { return 0; }
+                              })()} 个问题
+                            </span>
+                          )}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {inspectorTab === "review" && (
+                <ChapterQualityPanel
+                  projectId={project.id}
+                  chapterId={selectedChapterId}
+                  hasContent={text.trim().length > 0}
+                  currentContent={text}
+                  onContentRepaired={(repairedText) => setText(repairedText)}
+                  onLocateIssue={(start, end) => {
+                    const textarea = document.querySelector<HTMLTextAreaElement>('textarea[placeholder="正文内容..."]');
+                    if (textarea) {
+                      textarea.focus();
+                      textarea.setSelectionRange(start, end);
+                      // Scroll to the selection
+                      const lineHeight = 28; // 16px font * 1.75 line-height
+                      const linesBefore = textarea.value.substring(0, start).split("\n").length;
+                      textarea.scrollTop = Math.max(0, (linesBefore - 3) * lineHeight);
+                    }
+                  }}
+                />
+              )}
+
+              {inspectorTab === "aftercare" && (
+                <AftercarePanel
+                  project={project}
+                  chapterId={selectedChapterId}
+                  hasContent={text.trim().length > 0}
+                />
+              )}
+
+              {inspectorTab === "snapshots" && (
+                <div style={{ padding: 16, color: "var(--text-muted)", fontSize: 13 }}>
+                  快照功能将在 Phase F 中完善
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Toggle inspector button when closed */}
+        {!inspectorOpen && !focusMode && (
+          <button
+            onClick={() => setInspectorOpen(true)}
+            title="展开检查器"
+            style={{ width: 28, display: "flex", justifyContent: "center", alignItems: "center", borderLeft: "1px solid var(--border)", backgroundColor: "var(--surface)" }}
           >
-            {batchGenerating ? "生成中..." : `生成 ${selectedChapterIds.length} 章`}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+            <PanelRight className="h-4 w-4" style={{ color: "var(--text-muted)" }} />
+          </button>
+        )}
+      </div>
+
+      <GenerateConfirmDialog
+        open={showGenerateConfirm}
+        onOpenChange={setShowGenerateConfirm}
+        onConfirm={startGenerate}
+      />
+
+      <Dialog open={showBatchGenerateDialog} onOpenChange={setShowBatchGenerateDialog}>
+        <DialogContent className="sm:max-w-[640px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Zap className="h-4 w-4" />
+              批量生成正文
+            </DialogTitle>
+          </DialogHeader>
+          <div className="max-h-[360px] overflow-y-auto">
+            <div className="space-y-2">
+              {chapters.map((chapter) => (
+                <div
+                  key={chapter.id}
+                  className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                    selectedChapterIds.includes(chapter.id)
+                      ? "bg-primary/10 border-primary"
+                      : "border-border hover:bg-accent"
+                  }`}
+                  onClick={() => toggleChapterSelection(chapter.id)}
+                >
+                  <div className={`w-5 h-5 rounded border flex items-center justify-center ${
+                    selectedChapterIds.includes(chapter.id)
+                      ? "bg-primary border-primary text-primary-foreground"
+                      : "border-border"
+                  }`}>
+                    {selectedChapterIds.includes(chapter.id) && <CheckCircle2 className="h-3.5 w-3.5" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">
+                      第{chapter.chapter_number}章 {chapter.title || "未命名"}
+                    </p>
+                    {chapter.summary && (
+                      <p className="text-xs text-muted-foreground line-clamp-1">
+                        {chapter.summary}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowBatchGenerateDialog(false)}>
+              取消
+            </Button>
+            <Button
+              onClick={handleBatchGenerate}
+              disabled={batchGenerating || selectedChapterIds.length === 0}
+            >
+              {batchGenerating ? "生成中..." : `生成 ${selectedChapterIds.length} 章`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

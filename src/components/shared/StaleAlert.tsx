@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { listStaleReasons } from "@/lib/tauri";
+import { listStaleReasons, clearStale } from "@/lib/tauri";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import type { StaleReason } from "@/types";
 
@@ -39,7 +39,6 @@ export function StaleAlert({ projectId, targetType, onRegenerate }: {
   }, [projectId, targetType]);
 
   const handleClearStale = async () => {
-    const { clearStale } = await import("@/lib/tauri");
     await clearStale(projectId, targetType);
     setStale(false);
     setReason(null);

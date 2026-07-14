@@ -1,29 +1,25 @@
+/**
+ * CharacterEditor — Carbon Frost 人物工作室
+ *
+ * 左侧人物列表支持分层、搜索和排序；
+ * 中央显示人物核心资料；
+ * 右侧检查器显示关系、状态、出场章节和引用。
+ */
+
 import { useEffect, useState, useCallback } from "react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useCharacters } from "@/hooks/useCharacters";
 import { useOutline } from "@/hooks/useOutline";
 import { useSettings } from "@/hooks/useSettings";
 import { useAI } from "@/contexts/AIContext";
 import { useAppEvents } from "@/hooks/useAppEvents";
-import { StaleAlert } from "@/components/shared/StaleAlert";
-import { FlowGuide } from "@/components/flow/FlowGuide";
-import { GeneratingLoader } from "@/components/shared/GeneratingLoader";
-import { WorkspacePageLayout } from "@/components/editor/WorkspacePageLayout";
-import { AppScrollArea } from "@/components/shared/AppScrollArea";
-import { EditorActionBar } from "@/components/editor/EditorActionBar";
-import { ModelPresetSelect } from "@/components/editor/ModelPresetSelect";
-import { EditorStatusText } from "@/components/editor/EditorStatusText";
-import type { Project, Character, CharacterTier } from "@/types";
-import { Sparkles, Trash2, ChevronDown, Square, UserPlus, Shield, Star, Heart, Users } from "lucide-react";
-import { toast } from "sonner";
 import { useCharacterAssets } from "@/hooks/useCharacterAssets";
-import { Badge } from "@/components/ui/badge";
+import type { Project, Character, CharacterTier } from "@/types";
+import {
+  Sparkles, Square, UserPlus, Trash2,
+  Star, Shield, Search,
+  Loader2, Users, X,
+} from "lucide-react";
+import { toast } from "sonner";
 
 const tierLabels: Record<CharacterTier, string> = {
   main: "主角",
@@ -31,150 +27,27 @@ const tierLabels: Record<CharacterTier, string> = {
   minor: "其他",
 };
 
-const tierIcons: Record<CharacterTier, React.ElementType> = {
+const tierIcons: Record<CharacterTier, typeof Star> = {
   main: Star,
   supporting: Shield,
   minor: UserPlus,
 };
 
-const tierColors: Record<CharacterTier, string> = {
-  main: "text-primary",
-  supporting: "text-foreground",
-  minor: "text-muted-foreground",
-};
-
-const multilineFields = new Set(["appearance", "personality", "motivation", "relationships", "key_events"]);
-
-function CharacterField({
-  fieldKey,
-  value,
-  onChange,
-  placeholder,
-}: {
-  fieldKey: string;
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-}) {
-  const shouldMultiline = multilineFields.has(fieldKey) || value.length > 48 || value.includes("\n");
-
-  if (shouldMultiline) {
-    return (
-      <Textarea
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="app-scrollbar min-h-[76px] max-h-[240px] resize-y overflow-y-auto bg-background text-sm leading-6"
-      />
-    );
-  }
-
-  return (
-    <Input
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder={placeholder}
-      className="bg-background text-sm"
-    />
-  );
-}
-
-function CharacterCard({ character, onUpdate, onDelete }: {
-  character: Character;
-  onUpdate: (id: number, fields: Record<string, string>) => Promise<Character>;
-  onDelete: (id: number) => Promise<void>;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const [editing, setEditing] = useState<Record<string, string>>({});
-
-  const handleSave = async () => {
-    await onUpdate(character.id, editing);
-    setEditing({});
-    setExpanded(false);
-  };
-
-  const fields: { key: string; label: string; placeholder: string }[] = [
-    { key: "identity", label: "身份", placeholder: "角色身份" },
-    { key: "appearance", label: "外貌", placeholder: "外貌描写" },
-    { key: "personality", label: "性格", placeholder: "性格特征" },
-    { key: "motivation", label: "动机", placeholder: "角色动机" },
-    { key: "relationships", label: "关系", placeholder: "人物关系" },
-    { key: "key_events", label: "关键事件", placeholder: "关键事件" },
-  ];
-
-  const TierIcon = tierIcons[character.tier as CharacterTier] || UserPlus;
-  const tierLabel = tierLabels[character.tier as CharacterTier] || character.tier;
-  const tierColor = tierColors[character.tier as CharacterTier] || "text-muted-foreground";
-
-  const identity = character.identity || editing.identity || "";
-  const motivation = character.motivation || editing.motivation || "";
-  const subtitleParts = [identity && `身份：${identity}`, motivation && `动机：${motivation}`].filter(Boolean);
-  const subtitle = subtitleParts.join(" | ");
-
-  const isMain = character.tier === "main";
-  const isSupporting = character.tier === "supporting";
-
-  return (
-    <Collapsible open={expanded} onOpenChange={setExpanded}>
-      <div className={`w-full min-w-0 rounded-2xl border overflow-hidden ${isMain ? "border-border bg-card shadow-sm" : isSupporting ? "border-transparent bg-tile" : "border-transparent bg-accent"}`}>
-        <CollapsibleTrigger className="grid w-full min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-4 text-left transition-colors hover:bg-accent/50 sm:px-6">
-          <TierIcon className={`h-5 w-5 shrink-0 ${tierColor}`} />
-          <div className="grid min-w-0 gap-1">
-            <div className="flex min-w-0 items-center gap-2">
-              <span className="max-w-40 shrink-0 truncate font-semibold text-foreground sm:max-w-56 lg:max-w-72" title={character.name}>
-                {character.name}
-              </span>
-              <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${isMain ? "bg-primary/15 text-primary" : "bg-secondary text-muted-foreground"}`}>
-                {tierLabel}
-              </span>
-            </div>
-            {subtitle && !expanded && (
-              <span className="block min-w-0 truncate text-sm text-muted-foreground" title={subtitle}>
-                {subtitle}
-              </span>
-            )}
-          </div>
-          <ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-0" : "-rotate-90"}`} />
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="space-y-3 border-t border-border/50 px-4 py-4 sm:px-6">
-            {fields.map(({ key, label, placeholder }) => (
-              <div key={key} className="grid gap-2 sm:grid-cols-[4.5rem_minmax(0,1fr)] sm:items-start">
-                <label className="pt-2 text-xs text-muted-foreground">{label}</label>
-                <div className="min-w-0">
-                  <CharacterField
-                    fieldKey={key}
-                    value={editing[key] ?? (character[key as keyof Character] as string) ?? ""}
-                    onChange={(v) => setEditing(prev => ({ ...prev, [key]: v }))}
-                    placeholder={placeholder}
-                  />
-                </div>
-              </div>
-            ))}
-            <div className="flex flex-wrap gap-2 pt-2">
-              <Button size="sm" onClick={handleSave} className="rounded-full">保存</Button>
-              <Button size="sm" variant="destructive" className="rounded-full" onClick={() => onDelete(character.id)}>
-                <Trash2 className="h-3 w-3" />删除
-              </Button>
-            </div>
-          </div>
-        </CollapsibleContent>
-      </div>
-    </Collapsible>
-  );
-}
+type SortKey = "name" | "tier";
 
 export function CharacterEditor({ project }: { project: Project }) {
-  const { characters, main, supporting, minor, loading, load, update, remove } = useCharacters(project.id);
+  const { characters, loading, load, update, remove, create } = useCharacters(project.id);
   const { outline, load: loadOutline } = useOutline(project.id);
   const { currentPreset, currentPresetId, switchPreset, presets } = useSettings();
-  const { generating, streamedContent, thinkingContent, generatingStage, error, generate, cancel, generatedCharCount, elapsedMs, generationMeta } = useAI();
-  const { relations, states, load: loadAssets, createRelation, removeRelation, removeState } = useCharacterAssets(project.id);
+  const { generating, streamedContent, thinkingContent, generatingStage, generate, cancel } = useAI();
+  const { relations, states, load: loadAssets, createRelation, removeRelation } = useCharacterAssets(project.id);
 
+  const [search, setSearch] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("tier");
+  const [selectedId, setSelectedId] = useState<number | null>(null);
   const [showAddDialog, setShowAddDialog] = useState(false);
-  const [newDescription, setNewDescription] = useState("");
+  const [newName, setNewName] = useState("");
   const [newTier, setNewTier] = useState<CharacterTier>("supporting");
-  const [activeTab, setActiveTab] = useState<"characters" | "relations" | "states">("characters");
   const [showAddRelation, setShowAddRelation] = useState(false);
   const [newRelSource, setNewRelSource] = useState<number | null>(null);
   const [newRelTarget, setNewRelTarget] = useState<number | null>(null);
@@ -183,6 +56,13 @@ export function CharacterEditor({ project }: { project: Project }) {
   useEffect(() => { load(); loadAssets(); }, [load, loadAssets]);
   useEffect(() => { loadOutline(); }, [loadOutline]);
 
+  // Auto-select first character
+  useEffect(() => {
+    if (!selectedId && characters.length > 0) {
+      setSelectedId(characters[0].id);
+    }
+  }, [characters, selectedId]);
+
   const outlineEmpty = !outline || outline.status === "empty" || !outline.content;
 
   const handleGenerate = useCallback(async () => {
@@ -190,46 +70,11 @@ export function CharacterEditor({ project }: { project: Project }) {
     await generate({
       command: "generate_characters",
       stage: "characters",
-      args: {
-        projectId: project.id,
-        presetId: currentPreset.id,
-        modelName: currentPreset.model_name,
-      },
-      onComplete: () => {
-        load();
-        loadAssets();
-        toast.success("人物已生成");
-      },
-      onError: (err) => {
-        toast.error("生成失败", { description: err });
-      },
+      args: { projectId: project.id, presetId: currentPreset.id, modelName: currentPreset.model_name },
+      onComplete: () => { load(); loadAssets(); toast.success("人物已生成"); },
+      onError: (err) => toast.error("生成失败", { description: err }),
     });
-  }, [currentPreset, generate, project.id, load]);
-
-  const handleGenerateFromDescription = useCallback(async () => {
-    if (!currentPreset || !newDescription.trim()) return;
-    await generate({
-      command: "generate_character_from_description",
-      stage: "characters",
-      args: {
-        projectId: project.id,
-        presetId: currentPreset.id,
-        modelName: currentPreset.model_name,
-        description: newDescription.trim(),
-        tier: newTier,
-      },
-      onComplete: () => {
-        load();
-        loadAssets();
-        toast.success("人物已生成并保存");
-      },
-      onError: (err) => {
-        toast.error("生成失败", { description: err });
-      },
-    });
-    setNewDescription("");
-    setShowAddDialog(false);
-  }, [currentPreset, generate, project.id, newDescription, newTier, load]);
+  }, [currentPreset, generate, project.id, load, loadAssets]);
 
   useAppEvents({
     onGenerate: handleGenerate,
@@ -242,293 +87,463 @@ export function CharacterEditor({ project }: { project: Project }) {
     },
   });
 
-  if (loading) return <div className="p-6 text-muted-foreground">加载中...</div>;
+  // Filtered + sorted list
+  const filtered = characters.filter(c => {
+    if (!search.trim()) return true;
+    const q = search.trim().toLowerCase();
+    return c.name.toLowerCase().includes(q) || (c.identity || "").toLowerCase().includes(q);
+  });
 
-  const alertsContent = (
-    <>
-      <FlowGuide stage="characters" input={{ outlineContent: outline?.content, characterCount: characters.length }} />
-      <StaleAlert projectId={project.id} targetType="characters" onRegenerate={handleGenerate} />
-      {outlineEmpty && (
-        <div className="mx-4 mb-2 sm:mx-6">
-          <Alert>
-            <AlertDescription>请先完成大纲编写，再进行人物设计</AlertDescription>
-          </Alert>
-        </div>
-      )}
-      {error && (
-        <div className="mx-4 mb-2 sm:mx-6">
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        </div>
-      )}
-    </>
-  );
+  const tierOrder: CharacterTier[] = ["main", "supporting", "minor"];
+  const sorted = [...filtered].sort((a, b) => {
+    if (sortKey === "tier") {
+      return tierOrder.indexOf(a.tier as CharacterTier) - tierOrder.indexOf(b.tier as CharacterTier);
+    }
+    return a.name.localeCompare(b.name, "zh-CN");
+  });
 
-  const actionBarContent = (
-    <EditorActionBar>
-      {generating ? (
-        <Button variant="destructive" onClick={cancel} className="rounded-full px-4 py-2.5 gap-1.5">
-          <Square className="h-4 w-4" />停止生成
-        </Button>
-      ) : (
-        <Button onClick={handleGenerate} disabled={!currentPreset || outlineEmpty} className="rounded-full px-4 py-2.5 gap-1.5">
-          <Sparkles className="h-4 w-4" />
-          AI 生成人物
-        </Button>
-      )}
-      <ModelPresetSelect
-        value={currentPresetId ?? null}
-        presets={presets}
-        onChange={(v) => switchPreset(v)}
-        placeholder="选择模型"
-      />
-      {!generating && (
-        <Button variant="outline" onClick={() => setShowAddDialog(true)} className="rounded-full px-4 py-2.5 gap-1.5">
-          <UserPlus className="h-4 w-4" />
-          手动添加
-        </Button>
-      )}
-    </EditorActionBar>
-  );
+  const grouped = tierOrder.map(tier => ({
+    tier,
+    label: tierLabels[tier],
+    Icon: tierIcons[tier],
+    items: sorted.filter(c => c.tier === tier),
+  }));
+
+  const selected = characters.find(c => c.id === selectedId) || null;
+  const selectedRelations = selected ? relations.filter(r => r.source_character_id === selected.id || r.target_character_id === selected.id) : [];
+  const selectedStates = selected ? states.filter(s => s.character_id === selected.id) : [];
+
+  const handleCreate = async () => {
+    if (!newName.trim()) return;
+    const c = await create(newName.trim(), newTier);
+    setNewName("");
+    setShowAddDialog(false);
+    setSelectedId(c.id);
+    toast.success("已创建");
+  };
+
+  if (loading) {
+    return (
+      <div className="flex h-full items-center justify-center" style={{ color: "var(--text-muted)" }}>
+        <Loader2 className="animate-spin" style={{ width: 20, height: 20 }} />
+      </div>
+    );
+  }
 
   return (
-    <WorkspacePageLayout
-      title="人物小传"
-      description="维护主要角色、配角和关键人物关系"
-      status={<EditorStatusText generating={generating} idleLabel={`${characters.length} 个角色`} />}
-      alerts={alertsContent}
-      actionBar={actionBarContent}
-    >
-      {/* Tab switcher */}
-      <div className="flex gap-1 px-4 pt-2 sm:px-6">
-        <Button
-          size="sm"
-          variant={activeTab === "characters" ? "default" : "ghost"}
-          onClick={() => setActiveTab("characters")}
-          className="rounded-full gap-1.5"
-        >
-          <UserPlus className="h-3.5 w-3.5" />人物
-        </Button>
-        <Button
-          size="sm"
-          variant={activeTab === "relations" ? "default" : "ghost"}
-          onClick={() => setActiveTab("relations")}
-          className="rounded-full gap-1.5"
-        >
-          <Users className="h-3.5 w-3.5" />关系
-        </Button>
-        <Button
-          size="sm"
-          variant={activeTab === "states" ? "default" : "ghost"}
-          onClick={() => setActiveTab("states")}
-          className="rounded-full gap-1.5"
-        >
-          <Heart className="h-3.5 w-3.5" />状态
-        </Button>
-      </div>
-
-      {activeTab === "characters" && (
-      <AppScrollArea>
-        <div className="w-full min-w-0 max-w-full space-y-6">
-            {generating && generatingStage === "characters" && (
-            <GeneratingLoader
-              thinkingContent={thinkingContent}
-              outputContent={streamedContent}
-              label="正在生成人物..."
-              generating={generating}
-              elapsedMs={elapsedMs}
-              charCount={generatedCharCount}
-              modelName={generationMeta?.modelName}
+    <div className="flex h-full overflow-hidden">
+      {/* Left: Character List */}
+      <div
+        className="flex flex-col shrink-0 border-r"
+        style={{ width: 260, borderColor: "var(--border)", backgroundColor: "var(--surface)" }}
+      >
+        {/* Search + Sort */}
+        <div className="flex flex-col gap-2" style={{ padding: "10px 12px" }}>
+          <div className="flex items-center gap-2 rounded-md border" style={{ height: 30, padding: "0 8px", borderColor: "var(--border)", backgroundColor: "var(--canvas)" }}>
+            <Search style={{ width: 12, height: 12, color: "var(--text-muted)" }} />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="搜索人物"
+              style={{ flex: 1, border: "none", outline: "none", background: "transparent", color: "var(--text-primary)", fontSize: 12 }}
             />
-          )}
+          </div>
+          <div className="flex items-center gap-2" style={{ fontSize: 11, color: "var(--text-muted)" }}>
+            <button
+              onClick={() => setSortKey("tier")}
+              style={{ color: sortKey === "tier" ? "var(--text-secondary)" : "var(--text-muted)", fontWeight: sortKey === "tier" ? 500 : 400, background: "transparent", border: "none", cursor: "pointer", fontSize: 11 }}
+            >
+              按层级
+            </button>
+            <span style={{ color: "var(--border-strong)" }}>·</span>
+            <button
+              onClick={() => setSortKey("name")}
+              style={{ color: sortKey === "name" ? "var(--text-secondary)" : "var(--text-muted)", fontWeight: sortKey === "name" ? 500 : 400, background: "transparent", border: "none", cursor: "pointer", fontSize: 11 }}
+            >
+              按名称
+            </button>
+          </div>
+        </div>
 
-          {main.length > 0 && (
-            <div className="w-full min-w-0 space-y-2">
-              <h3 className="px-2 text-sm font-semibold text-primary">主要角色</h3>
-              {main.map(c => <CharacterCard key={c.id} character={c} onUpdate={update} onDelete={remove} />)}
+        {/* List */}
+        <div className="flex-1 overflow-y-auto app-scrollbar" style={{ padding: "0 4px" }}>
+          {grouped.map(({ tier, label, Icon, items }) => items.length > 0 && (
+            <div key={tier} className="flex flex-col" style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", padding: "4px 12px", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                {label}（{items.length}）
+              </div>
+              {items.map(c => (
+                <CharacterListRow
+                  key={c.id}
+                  character={c}
+                  Icon={Icon}
+                  active={c.id === selectedId}
+                  onClick={() => setSelectedId(c.id)}
+                />
+              ))}
             </div>
-          )}
-
-          {supporting.length > 0 && (
-            <div className="w-full min-w-0 space-y-2">
-              <h3 className="px-2 text-sm font-semibold text-foreground">重要配角</h3>
-              {supporting.map(c => <CharacterCard key={c.id} character={c} onUpdate={update} onDelete={remove} />)}
+          ))}
+          {characters.length === 0 && (
+            <div className="flex flex-col items-center gap-3" style={{ padding: 40, color: "var(--text-muted)" }}>
+              <UserPlus style={{ width: 24, height: 24 }} />
+              <span style={{ fontSize: 12 }}>暂无人物</span>
             </div>
-          )}
-
-          {minor.length > 0 && (
-            <Collapsible>
-              <CollapsibleTrigger className="flex items-center gap-2 px-2 py-1 text-sm font-semibold text-muted-foreground">
-                <ChevronDown className="h-4 w-4" />
-                其他角色（已折叠）
-              </CollapsibleTrigger>
-              <CollapsibleContent className="mt-2 space-y-2">
-                {minor.map(c => <CharacterCard key={c.id} character={c} onUpdate={update} onDelete={remove} />)}
-              </CollapsibleContent>
-            </Collapsible>
-          )}
-
-          {characters.length === 0 && !generating && (
-            <p className="py-8 text-center text-muted-foreground">暂无人物，点击 AI 生成或手动添加</p>
           )}
         </div>
-      </AppScrollArea>
-      )}
 
-      {activeTab === "relations" && (
-        <AppScrollArea>
-          <div className="w-full min-w-0 max-w-full space-y-4 px-4 py-4 sm:px-6">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-foreground">角色关系</h3>
-              <Button size="sm" variant="outline" onClick={() => setShowAddRelation(!showAddRelation)} className="rounded-full gap-1.5">
-                <UserPlus className="h-3.5 w-3.5" />添加关系
-              </Button>
-            </div>
+        {/* Add button */}
+        <div className="shrink-0 border-t" style={{ padding: 8, borderColor: "var(--border)" }}>
+          <button
+            onClick={() => setShowAddDialog(true)}
+            className="flex items-center gap-2 rounded-md w-full transition-colors"
+            style={{
+              height: 32,
+              padding: "0 12px",
+              backgroundColor: "var(--surface-raised)",
+              color: "var(--text-primary)",
+              border: "1px solid var(--border)",
+              fontSize: 12, fontWeight: 500, cursor: "pointer",
+            }}
+          >
+            <UserPlus style={{ width: 14, height: 14 }} />
+            手动添加
+          </button>
+        </div>
+      </div>
 
-            {showAddRelation && (
-              <div className="rounded-2xl border border-border bg-card p-4 space-y-3">
-                <div className="grid gap-2 sm:grid-cols-3">
-                  <div>
-                    <label className="text-xs text-muted-foreground">角色 A</label>
-                    <Select value={String(newRelSource ?? "")} onValueChange={(v) => setNewRelSource(Number(v))}>
-                      <SelectTrigger className="mt-1"><SelectValue placeholder="选择" /></SelectTrigger>
-                      <SelectContent>
-                        {characters.map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div>
-                    <label className="text-xs text-muted-foreground">角色 B</label>
-                    <Select value={String(newRelTarget ?? "")} onValueChange={(v) => setNewRelTarget(Number(v))}>
-                      <SelectTrigger className="mt-1"><SelectValue placeholder="选择" /></SelectTrigger>
-                      <SelectContent>
-                        {characters.map(c => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div>
-                    <label className="text-xs text-muted-foreground">关系类型</label>
-                    <Input value={newRelType} onChange={(e) => setNewRelType(e.target.value)} placeholder="如：师徒、仇敌、恋人" className="mt-1" />
-                  </div>
-                </div>
-                <Button
-                  size="sm"
-                  disabled={!newRelSource || !newRelTarget || !newRelType.trim()}
-                  onClick={async () => {
-                    await createRelation(newRelSource!, newRelTarget!, newRelType.trim());
-                    setNewRelSource(null); setNewRelTarget(null); setNewRelType("");
-                    setShowAddRelation(false);
-                    toast.success("关系已创建");
-                  }}
-                  className="rounded-full"
-                >创建</Button>
-              </div>
-            )}
-
-            {relations.map(rel => {
-              const source = characters.find(c => c.id === rel.source_character_id);
-              const target = characters.find(c => c.id === rel.target_character_id);
-              return (
-                <div key={rel.id} className="rounded-2xl border border-border bg-card p-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-sm">
-                      <span className="font-medium">{source?.name || "?"}</span>
-                      <span className="text-muted-foreground">→</span>
-                      <span className="font-medium">{target?.name || "?"}</span>
-                      <Badge variant="secondary" className="text-xs">{rel.relation_type || "未分类"}</Badge>
-                      {rel.tension && <Badge variant="destructive" className="text-xs">{rel.tension}</Badge>}
-                    </div>
-                    <Button size="sm" variant="ghost" onClick={() => removeRelation(rel.id)} className="rounded-full h-7 w-7 p-0">
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
-                  </div>
-                  {rel.summary && <p className="mt-1 text-xs text-muted-foreground">{rel.summary}</p>}
-                </div>
-              );
-            })}
-
-            {relations.length === 0 && !showAddRelation && (
-              <p className="py-8 text-center text-muted-foreground">暂无角色关系，点击「添加关系」开始创建</p>
-            )}
-          </div>
-        </AppScrollArea>
-      )}
-
-      {activeTab === "states" && (
-        <AppScrollArea>
-          <div className="w-full min-w-0 max-w-full space-y-4 px-4 py-4 sm:px-6">
-            <h3 className="text-sm font-semibold text-foreground">角色状态</h3>
-            {states.length === 0 && (
-              <p className="py-8 text-center text-muted-foreground">暂无角色状态记录<br/>执行章节后护理后可自动提取</p>
-            )}
-            {states.map(st => {
-              const char = characters.find(c => c.id === st.character_id);
-              return (
-                <div key={st.id} className="rounded-2xl border border-border bg-card p-3">
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium text-sm">{char?.name || "未知角色"}</span>
-                    <Button size="sm" variant="ghost" onClick={() => removeState(st.id)} className="rounded-full h-7 w-7 p-0">
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
-                  </div>
-                  <div className="mt-1 space-y-0.5 text-xs text-muted-foreground">
-                    {st.state_summary && <p>状态：{st.state_summary}</p>}
-                    {st.goal && <p>目标：{st.goal}</p>}
-                    {st.emotion && <p>情绪：{st.emotion}</p>}
-                    {st.location && <p>位置：{st.location}</p>}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </AppScrollArea>
-      )}
-
-      {/* New character dialog — description-first approach */}
-      <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>添加人物</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div>
-              <label className="text-sm text-muted-foreground">描述你想要的角色</label>
-              <Textarea
-                value={newDescription}
-                onChange={(e) => setNewDescription(e.target.value)}
-                placeholder="例如：一个冷酷的帝国将军，表面效忠皇帝但暗中策划推翻..."
-                className="app-scrollbar mt-1 min-h-[120px] resize-y"
-                autoFocus
-              />
-            </div>
-            <div>
-              <label className="text-sm text-muted-foreground">角色层级</label>
-              <Select value={newTier} onValueChange={(v) => setNewTier(v as CharacterTier)}>
-                <SelectTrigger className="mt-1">
-                  <SelectValue placeholder="选择层级" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="main">主角</SelectItem>
-                  <SelectItem value="supporting">配角</SelectItem>
-                  <SelectItem value="minor">其他</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowAddDialog(false)} className="rounded-full">取消</Button>
-            <Button
-              onClick={handleGenerateFromDescription}
-              disabled={!currentPreset || !newDescription.trim()}
-              className="rounded-full gap-1.5"
+      {/* Center: Character Detail */}
+      <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+        {/* Toolbar */}
+        <div className="flex items-center justify-between shrink-0 border-b" style={{ padding: "8px 18px", borderColor: "var(--border)", backgroundColor: "var(--surface)" }}>
+          <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+            {selected ? selected.name : "人物"}
+          </span>
+          <div className="flex items-center gap-2">
+            <select
+              value={currentPresetId ?? ""}
+              onChange={(e) => switchPreset(Number(e.target.value))}
+              style={{ height: 28, padding: "0 8px", border: "1px solid var(--border)", borderRadius: 4, background: "var(--canvas)", color: "var(--text-secondary)", fontSize: 12, outline: "none", cursor: "pointer" }}
             >
-              <Sparkles className="h-4 w-4" />
-              AI 生成
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </WorkspacePageLayout>
+              {presets.map(p => <option key={p.id} value={p.id}>{p.model_name}</option>)}
+            </select>
+            {generating && generatingStage === "characters" ? (
+              <button onClick={cancel} className="flex items-center gap-1.5 rounded-md" style={{ height: 28, padding: "0 10px", backgroundColor: "var(--danger-soft)", color: "var(--danger)", border: "1px solid var(--danger)", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                <Square style={{ width: 10, height: 10 }} />停止
+              </button>
+            ) : (
+              <button onClick={handleGenerate} disabled={!currentPreset || outlineEmpty} className="flex items-center gap-1.5 rounded-md disabled:opacity-40" style={{ height: 28, padding: "0 12px", backgroundColor: "var(--accent)", color: "#FFFFFF", border: "none", fontSize: 12, fontWeight: 600, cursor: currentPreset && !outlineEmpty ? "pointer" : "not-allowed" }}>
+                <Sparkles style={{ width: 12, height: 12 }} />AI 生成
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Detail body */}
+        <div className="flex-1 overflow-y-auto app-scrollbar">
+          {generating && generatingStage === "characters" ? (
+            <div className="flex flex-col gap-3" style={{ padding: 24 }}>
+              {thinkingContent && (
+                <div style={{ padding: "8px 12px", borderRadius: 6, backgroundColor: "var(--surface-raised)", border: "1px solid var(--border)", fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6, fontStyle: "italic" }}>
+                  {thinkingContent}
+                </div>
+              )}
+              <div style={{ padding: "8px 12px", borderRadius: 6, backgroundColor: "var(--accent-soft)", border: "1px solid var(--accent)", fontSize: 13, color: "var(--text-primary)", lineHeight: 1.8, whiteSpace: "pre-wrap", minHeight: 200 }}>
+                <span style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, fontSize: 11, color: "var(--accent)" }}>
+                  <Loader2 className="animate-spin" style={{ width: 12, height: 12 }} />正在生成人物…
+                </span>
+                {streamedContent || "等待 AI 响应…"}
+              </div>
+            </div>
+          ) : selected ? (
+            <CharacterDetail character={selected} onUpdate={update} onDelete={async (id) => { await remove(id); setSelectedId(null); }} />
+          ) : (
+            <div className="flex flex-col items-center justify-center gap-3" style={{ height: "100%", padding: 40, color: "var(--text-muted)" }}>
+              <Users style={{ width: 28, height: 28 }} />
+              <span style={{ fontSize: 13 }}>选择左侧人物查看详情</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Right Inspector */}
+      {selected && (
+        <div className="shrink-0 border-l overflow-y-auto app-scrollbar" style={{ width: 280, borderColor: "var(--border)", backgroundColor: "var(--surface)" }}>
+          <div className="flex flex-col gap-4" style={{ padding: 16 }}>
+            <InspectorSection title="角色关系">
+              <div className="flex flex-col gap-2">
+                {selectedRelations.length > 0 ? (
+                  selectedRelations.map(rel => {
+                    const other = characters.find(c => c.id === (rel.source_character_id === selected.id ? rel.target_character_id : rel.source_character_id));
+                    return (
+                      <div key={rel.id} className="flex items-center justify-between gap-2" style={{ padding: "6px 8px", borderRadius: 4, backgroundColor: "var(--canvas)", border: "1px solid var(--border)" }}>
+                        <div className="flex flex-col min-w-0">
+                          <span style={{ fontSize: 12, color: "var(--text-primary)" }}>{other?.name || "?"}</span>
+                          <span style={{ fontSize: 10, color: "var(--text-muted)" }}>{rel.relation_type}</span>
+                        </div>
+                        <button onClick={() => removeRelation(rel.id)} style={{ color: "var(--text-muted)", background: "transparent", border: "none", cursor: "pointer" }}>
+                          <Trash2 style={{ width: 12, height: 12 }} />
+                        </button>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>暂无关系记录</span>
+                )}
+                <button onClick={() => setShowAddRelation(!showAddRelation)} className="flex items-center gap-1.5 rounded-md w-full" style={{ height: 28, padding: "0 8px", border: "1px solid var(--border)", background: "var(--canvas)", color: "var(--text-secondary)", fontSize: 12, cursor: "pointer" }}>
+                  <UserPlus style={{ width: 12, height: 12 }} />添加关系
+                </button>
+              </div>
+            </InspectorSection>
+
+            <InspectorSection title="状态演变">
+              {selectedStates.length > 0 ? (
+                selectedStates.map(st => (
+                  <div key={st.id} className="flex flex-col gap-1" style={{ padding: "6px 8px", borderRadius: 4, backgroundColor: "var(--canvas)", border: "1px solid var(--border)" }}>
+                    <span style={{ fontSize: 12, color: "var(--text-primary)" }}>{st.state_summary || "状态记录"}</span>
+                    {st.goal && <span style={{ fontSize: 11, color: "var(--text-muted)" }}>目标：{st.goal}</span>}
+                    {st.emotion && <span style={{ fontSize: 11, color: "var(--text-muted)" }}>情绪：{st.emotion}</span>}
+                  </div>
+                ))
+              ) : (
+                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>暂无状态记录</span>
+              )}
+            </InspectorSection>
+          </div>
+        </div>
+      )}
+
+      {/* Add Character Dialog */}
+      {showAddDialog && (
+        <SimpleDialog onClose={() => setShowAddDialog(false)} title="添加人物">
+          <div className="flex flex-col gap-3">
+            <div>
+              <label style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4, display: "block" }}>姓名</label>
+              <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="角色姓名" style={{ width: "100%", height: 36, padding: "0 12px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--canvas)", color: "var(--text-primary)", fontSize: 13, outline: "none" }} autoFocus onKeyDown={e => e.key === "Enter" && handleCreate()} />
+            </div>
+            <div>
+              <label style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4, display: "block" }}>层级</label>
+              <div className="flex gap-2">
+                {(["main", "supporting", "minor"] as CharacterTier[]).map(t => (
+                  <button key={t} onClick={() => setNewTier(t)} style={{ height: 30, padding: "0 12px", borderRadius: 4, border: `1px solid ${newTier === t ? "var(--accent)" : "var(--border)"}`, backgroundColor: newTier === t ? "var(--accent-soft)" : "var(--canvas)", color: newTier === t ? "var(--accent)" : "var(--text-muted)", fontSize: 12, cursor: "pointer" }}>
+                    {tierLabels[t]}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <button onClick={handleCreate} disabled={!newName.trim()} className="rounded-md disabled:opacity-40" style={{ height: 36, backgroundColor: "var(--accent)", color: "#FFFFFF", border: "none", fontSize: 13, fontWeight: 600, cursor: newName.trim() ? "pointer" : "not-allowed" }}>
+              创建
+            </button>
+          </div>
+        </SimpleDialog>
+      )}
+
+      {/* Add Relation Dialog */}
+      {showAddRelation && selected && (
+        <SimpleDialog onClose={() => setShowAddRelation(false)} title="添加关系">
+          <div className="flex flex-col gap-3">
+            <RelationForm
+              characters={characters}
+              sourceId={newRelSource}
+              targetId={newRelTarget}
+              relType={newRelType}
+              onSourceChange={setNewRelSource}
+              onTargetChange={setNewRelTarget}
+              onTypeChange={setNewRelType}
+              defaultSource={selected.id}
+            />
+            <button
+              onClick={async () => {
+                if (!newRelSource || !newRelTarget || !newRelType.trim()) return;
+                await createRelation(newRelSource, newRelTarget, newRelType.trim());
+                setNewRelSource(null); setNewRelTarget(null); setNewRelType("");
+                setShowAddRelation(false);
+                toast.success("关系已创建");
+              }}
+              disabled={!newRelSource || !newRelTarget || !newRelType.trim()}
+              className="rounded-md disabled:opacity-40"
+              style={{ height: 36, backgroundColor: "var(--accent)", color: "#FFFFFF", border: "none", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+            >
+              创建
+            </button>
+          </div>
+        </SimpleDialog>
+      )}
+    </div>
+  );
+}
+
+function CharacterListRow({ character, Icon, active, onClick }: { character: Character; Icon: typeof Star; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex items-center gap-2 w-full text-left rounded-md transition-colors"
+      style={{
+        height: 36,
+        padding: "0 12px",
+        backgroundColor: active ? "var(--surface-selected)" : "transparent",
+        borderLeft: active ? "2px solid var(--accent)" : "2px solid transparent",
+        color: active ? "var(--text-primary)" : "var(--text-secondary)",
+        fontSize: 13, fontWeight: active ? 500 : 400,
+      }}
+      onMouseEnter={e => { if (!active) e.currentTarget.style.backgroundColor = "var(--surface-hover)"; }}
+      onMouseLeave={e => { if (!active) e.currentTarget.style.backgroundColor = "transparent"; }}
+      title={character.name}
+    >
+      <Icon style={{ width: 14, height: 14, color: active ? "var(--accent)" : "var(--text-muted)", flexShrink: 0 }} />
+      <span className="min-w-0 truncate">{character.name}</span>
+      {character.identity && (
+        <span className="min-w-0 truncate" style={{ fontSize: 11, color: "var(--text-muted)", marginLeft: "auto", maxWidth: 80 }}>
+          {character.identity}
+        </span>
+      )}
+    </button>
+  );
+}
+
+function CharacterDetail({ character, onUpdate, onDelete }: {
+  character: Character;
+  onUpdate: (id: number, fields: Record<string, string>) => Promise<Character>;
+  onDelete: (id: number) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState<Record<string, string>>({});
+
+  const fields: { key: string; label: string; placeholder: string; multiline?: boolean }[] = [
+    { key: "identity", label: "身份", placeholder: "角色身份" },
+    { key: "appearance", label: "外貌", placeholder: "外貌描写", multiline: true },
+    { key: "personality", label: "性格", placeholder: "性格特征", multiline: true },
+    { key: "motivation", label: "动机", placeholder: "角色动机", multiline: true },
+    { key: "relationships", label: "关系", placeholder: "人物关系", multiline: true },
+    { key: "key_events", label: "关键事件", placeholder: "关键事件", multiline: true },
+  ];
+
+  const handleSave = async () => {
+    if (Object.keys(editing).length === 0) return;
+    await onUpdate(character.id, editing);
+    setEditing({});
+    toast.success("已保存");
+  };
+
+  return (
+    <div style={{ maxWidth: 680, margin: "0 auto", padding: 24 }} className="flex flex-col gap-4">
+      {/* Name + Tier */}
+      <div className="flex items-center gap-3">
+        <h2 style={{ fontFamily: "var(--font-heading)", fontSize: 20, fontWeight: 600, color: "var(--text-primary)" }}>
+          {character.name}
+        </h2>
+        <span style={{ fontSize: 12, padding: "2px 8px", borderRadius: 4, backgroundColor: "var(--surface-raised)", color: "var(--text-secondary)" }}>
+          {tierLabels[character.tier as CharacterTier] || character.tier}
+        </span>
+      </div>
+
+      {/* Fields */}
+      {fields.map(({ key, label, placeholder, multiline }) => {
+        const value = editing[key] ?? (character[key as keyof Character] as string) ?? "";
+        return (
+          <div key={key} className="flex flex-col gap-1">
+            <label style={{ fontSize: 12, fontWeight: 500, color: "var(--text-secondary)" }}>{label}</label>
+            {multiline ? (
+              <textarea
+                value={value}
+                onChange={e => setEditing(prev => ({ ...prev, [key]: e.target.value }))}
+                placeholder={placeholder}
+                style={{ width: "100%", minHeight: 60, padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--canvas)", color: "var(--text-primary)", fontSize: 13, lineHeight: 1.6, outline: "none", resize: "vertical", fontFamily: "var(--font-ui)" }}
+              />
+            ) : (
+              <input
+                value={value}
+                onChange={e => setEditing(prev => ({ ...prev, [key]: e.target.value }))}
+                placeholder={placeholder}
+                style={{ width: "100%", height: 36, padding: "0 12px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--canvas)", color: "var(--text-primary)", fontSize: 13, outline: "none" }}
+              />
+            )}
+          </div>
+        );
+      })}
+
+      {/* Actions */}
+      <div className="flex items-center gap-2" style={{ paddingTop: 8 }}>
+        <button
+          onClick={handleSave}
+          disabled={Object.keys(editing).length === 0}
+          className="flex items-center gap-1.5 rounded-md disabled:opacity-40"
+          style={{ height: 32, padding: "0 14px", backgroundColor: "var(--accent)", color: "#FFFFFF", border: "none", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+        >
+          保存
+        </button>
+        <button
+          onClick={() => onDelete(character.id)}
+          className="flex items-center gap-1.5 rounded-md"
+          style={{ height: 32, padding: "0 14px", backgroundColor: "var(--danger-soft)", color: "var(--danger)", border: "1px solid var(--danger)", fontSize: 13, fontWeight: 500, cursor: "pointer" }}
+        >
+          <Trash2 style={{ width: 12, height: 12 }} />
+          删除
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function RelationForm({
+  characters, sourceId, targetId, relType,
+  onSourceChange, onTargetChange, onTypeChange, defaultSource,
+}: {
+  characters: Character[];
+  sourceId: number | null;
+  targetId: number | null;
+  relType: string;
+  onSourceChange: (v: number) => void;
+  onTargetChange: (v: number) => void;
+  onTypeChange: (v: string) => void;
+  defaultSource: number;
+}) {
+  useEffect(() => { if (!sourceId) onSourceChange(defaultSource); }, []);
+  return (
+    <>
+      <div>
+        <label style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4, display: "block" }}>角色 A</label>
+        <select value={sourceId ?? ""} onChange={e => onSourceChange(Number(e.target.value))} style={{ width: "100%", height: 36, padding: "0 12px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--canvas)", color: "var(--text-primary)", fontSize: 13, outline: "none" }}>
+          <option value="">选择</option>
+          {characters.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+      </div>
+      <div>
+        <label style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4, display: "block" }}>角色 B</label>
+        <select value={targetId ?? ""} onChange={e => onTargetChange(Number(e.target.value))} style={{ width: "100%", height: 36, padding: "0 12px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--canvas)", color: "var(--text-primary)", fontSize: 13, outline: "none" }}>
+          <option value="">选择</option>
+          {characters.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+      </div>
+      <div>
+        <label style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4, display: "block" }}>关系类型</label>
+        <input value={relType} onChange={e => onTypeChange(e.target.value)} placeholder="如：师徒、仇敌、恋人" style={{ width: "100%", height: 36, padding: "0 12px", border: "1px solid var(--border)", borderRadius: 6, background: "var(--canvas)", color: "var(--text-primary)", fontSize: 13, outline: "none" }} />
+      </div>
+    </>
+  );
+}
+
+function InspectorSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-2">
+      <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+        {title}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function SimpleDialog({ onClose, title, children }: { onClose: () => void; title: string; children: React.ReactNode }) {
+  return (
+    <div className="fixed inset-0 flex items-center justify-center" style={{ backgroundColor: "rgba(0,0,0,0.6)", zIndex: 50 }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} className="flex flex-col gap-3 rounded-lg border" style={{ width: 440, padding: 24, backgroundColor: "var(--surface-raised)", borderColor: "var(--border-strong)", boxShadow: "0 12px 40px rgba(0,0,0,0.5)" }}>
+        <div className="flex items-center justify-between">
+          <h3 style={{ fontFamily: "var(--font-heading)", fontSize: 16, fontWeight: 600, color: "var(--text-primary)" }}>{title}</h3>
+          <button onClick={onClose} aria-label="关闭" title="关闭" style={{ color: "var(--text-muted)", background: "transparent", border: "none", cursor: "pointer" }}>
+            <X style={{ width: 16, height: 16 }} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
   );
 }

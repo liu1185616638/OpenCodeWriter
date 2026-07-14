@@ -19,6 +19,8 @@ pub struct GenerationLogContext {
     pub command: String,
     pub model_name: String,
     pub input_chars: usize,
+    pub session_id: String,
+    pub task_type: String,
 }
 
 /// Insert a "started" generation log entry, returns the log id (0 on failure or when project_id is None)
@@ -33,9 +35,9 @@ pub fn insert_generation_log(app: &AppHandle, ctx: &GenerationLogContext) -> i64
         Err(_) => return 0,
     };
     let res = conn.execute(
-        "INSERT INTO generation_logs (project_id, target_type, target_id, command, model_name, status, error, input_chars, output_chars, started_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, 'started', '', ?6, 0, datetime('now'))",
-        params![project_id, ctx.target_type, ctx.target_id, ctx.command, ctx.model_name, ctx.input_chars as i64],
+        "INSERT INTO generation_logs (project_id, target_type, target_id, command, model_name, status, error, input_chars, output_chars, started_at, session_id, task_type) \
+         VALUES (?1, ?2, ?3, ?4, ?5, 'started', '', ?6, 0, datetime('now'), ?7, ?8)",
+        params![project_id, ctx.target_type, ctx.target_id, ctx.command, ctx.model_name, ctx.input_chars as i64, ctx.session_id, ctx.task_type],
     );
     if res.is_ok() { conn.last_insert_rowid() } else { 0 }
 }

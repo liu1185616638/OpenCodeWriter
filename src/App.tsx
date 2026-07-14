@@ -1,53 +1,87 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, lazy, Suspense } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { SidebarProvider, SidebarInset, useSidebar } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "sonner";
-import { AppSidebar } from "@/components/layout/AppSidebar";
-import { TitleBar } from "@/components/layout/TitleBar";
-import type { TitleBarActions } from "@/components/layout/TitleBar";
+import { Loader2 } from "lucide-react";
+import { AppShell } from "@/components/workbench/AppShell";
+import { NavigationProvider, useNavigation } from "@/app/AppNavigationContext";
+import { WorkbenchProvider } from "@/app/WorkbenchContext";
+import {
+  legacyStageToRoute, routeToProgressStage,
+  type WorkspaceRoute, type SettingsSection,
+} from "@/app/route-types";
 import { AiProvider, useAI } from "@/contexts/AIContext";
 import { SetupWizard } from "@/views/SetupWizard";
 import { ProjectList } from "@/views/ProjectList";
-import { OutlineEditor } from "@/views/OutlineEditor";
-import { CharacterEditor } from "@/views/CharacterEditor";
-import { ChapterEditor } from "@/views/ChapterEditor";
-import { ContentEditor } from "@/views/ContentEditor";
-import { WorldEditor } from "@/views/WorldEditor";
-import { KnowledgeEditor } from "@/views/KnowledgeEditor";
-import { Settings } from "@/views/Settings";
-import { ProjectProfileView } from "@/views/ProjectProfileView";
-import { IdeaToProjectWizard } from "@/views/IdeaToProjectWizard";
 import { useTheme } from "@/hooks/useTheme";
 import { useKeybindings } from "@/hooks/useKeybindings";
+import { useSettings } from "@/hooks/useSettings";
 import { updateProjectStage } from "@/lib/tauri";
 import type { Project, CreationStage } from "@/types";
 
-type AppView = "setup" | "project-list" | "workspace" | "settings" | "idea-wizard" | "project-profile";
-type SettingsTab = "writing-style" | "model-config" | "style-rules" | "model-routes" | "mcp-permissions" | "shortcuts" | "about";
+// ── Lazy-loaded route views (code-splitting) ──
+const OutlineEditor = lazy(() => import("@/views/OutlineEditor").then(m => ({ default: m.OutlineEditor })));
+const CharacterEditor = lazy(() => import("@/views/CharacterEditor").then(m => ({ default: m.CharacterEditor })));
+const ChapterEditor = lazy(() => import("@/views/ChapterEditor").then(m => ({ default: m.ChapterEditor })));
+const ContentEditor = lazy(() => import("@/views/ContentEditor").then(m => ({ default: m.ContentEditor })));
+const WorldEditor = lazy(() => import("@/views/WorldEditor").then(m => ({ default: m.WorldEditor })));
+const KnowledgeEditor = lazy(() => import("@/views/KnowledgeEditor").then(m => ({ default: m.KnowledgeEditor })));
+const FactsEditor = lazy(() => import("@/views/FactsEditor").then(m => ({ default: m.FactsEditor })));
+const StyleWorkspace = lazy(() => import("@/views/StyleWorkspace").then(m => ({ default: m.StyleWorkspace })));
+const TaskCenter = lazy(() => import("@/views/TaskCenter").then(m => ({ default: m.TaskCenter })));
+const Settings = lazy(() => import("@/views/Settings").then(m => ({ default: m.Settings })));
+const ProjectProfileView = lazy(() => import("@/views/ProjectProfileView").then(m => ({ default: m.ProjectProfileView })));
+const IdeaToProjectWizard = lazy(() => import("@/views/IdeaToProjectWizard").then(m => ({ default: m.IdeaToProjectWizard })));
 
-function WorkspaceTitleBar({ onNewProject, onToggleTheme }: { onNewProject: () => void; onToggleTheme: () => void }) {
-  const { toggleSidebar } = useSidebar();
-  const actions: TitleBarActions = {
-    onNewProject,
-    onToggleTheme,
-    onToggleSidebar: toggleSidebar,
-    showSidebarToggle: true,
-  };
-  return <TitleBar actions={actions} />;
+/** Suspense fallback spinner */
+const RouteFallback = () => (
+  <div className="flex items-center justify-center h-full">
+    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+  </div>
+);
+
+// ── Settings tab mapping (old ↔ new) ──
+const SETTINGS_TAB_MAP: Record<SettingsSection, string> = {
+  "model-presets": "model-config",
+  "model-routes": "model-routes",
+  "tools-permissions": "mcp-permissions",
+  "mcp": "mcp-permissions",
+  "appearance": "appearance",
+  "shortcuts": "shortcuts",
+  "about": "about",
+};
+
+function mapSectionToLegacyTab(section: SettingsSection): string {
+  return SETTINGS_TAB_MAP[section] ?? "writing-style";
+}
+
+/** Page title for a workspace section */
+function sectionTitle(section: WorkspaceRoute): string {
+  switch (section) {
+    case "project-profile": return "项目定盘";
+    case "outline": return "大纲";
+    case "characters": return "人物";
+    case "world": return "世界观";
+    case "chapters": return "章节规划";
+    case "content": return "正文";
+    case "facts": return "事实与伏笔";
+    case "knowledge": return "知识库";
+    case "style": return "写法引擎";
+    case "tasks": return "任务中心";
+    case "settings": return "设置";
+    default: return section;
+  }
 }
 
 /**
- * Inner app that consumes AiContext.
- * Must be rendered inside <AiProvider> so that useAI() works.
+ * Inner app that consumes AIContext and the new typed navigation.
  */
 function AppInner() {
-  const [view, setView] = useState<AppView>("setup");
+  const { route, navigate, goBack, canGoBack, setRoute } = useNavigation();
   const [currentProject, setCurrentProject] = useState<Project | null>(null);
-  const [currentStage, setCurrentStage] = useState<CreationStage>("outline");
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("writing-style");
   const { toggle: toggleTheme } = useTheme();
   const { generatingStage } = useAI();
+  const { currentPreset } = useSettings();
 
   // Check setup status on launch
   useEffect(() => {
@@ -55,35 +89,37 @@ function AppInner() {
       try {
         const complete = await invoke<string | null>("get_setting", { key: "setup_complete" });
         if (complete === "true") {
-          setView("project-list");
+          setRoute({ name: "project-library" });
         } else {
-          setView("setup");
+          setRoute({ name: "setup" });
         }
       } catch {
-        setView("setup");
+        setRoute({ name: "setup" });
       }
     }
     checkSetup();
-  }, []);
+  }, [setRoute]);
+
+  // Compute current workspace section
+  const currentSection: WorkspaceRoute | null =
+    route.name === "workspace" ? route.section : null;
+
+  // Settings tab (mapped to legacy for existing Settings component)
+  const settingsTab =
+    route.name === "settings" ? mapSectionToLegacyTab(route.tab) : "writing-style";
 
   const handleNewProject = useCallback(() => {
-    if (view !== "project-list") setView("project-list");
-  }, [view]);
+    navigate({ name: "project-library" });
+  }, [navigate]);
 
   const handleOpenSettings = useCallback(() => {
-    setSettingsTab("writing-style");
-    setView("settings");
-  }, []);
-
-  const handleBackFromSettings = useCallback(() => {
-    if (currentProject) setView("workspace");
-    else setView("project-list");
-  }, [currentProject]);
+    navigate({ name: "settings", tab: "model-presets" });
+  }, [navigate]);
 
   const handleSwitchProject = useCallback(() => {
     setCurrentProject(null);
-    setView("project-list");
-  }, []);
+    navigate({ name: "project-library" });
+  }, [navigate]);
 
   useKeybindings({
     onNewProject: handleNewProject,
@@ -91,8 +127,8 @@ function AppInner() {
     onToggleTheme: toggleTheme,
     onSwitchStage: (stage: CreationStage) => {
       if (currentProject) {
-        setCurrentStage(stage);
-        setView("workspace");
+        const section = legacyStageToRoute(stage);
+        navigate({ name: "workspace", projectId: currentProject.id, section });
       }
     },
     onGenerate: () => {
@@ -107,131 +143,208 @@ function AppInner() {
     },
   });
 
-  const handleSetupComplete = () => {
-    setView("project-list");
-  };
+  const handleSetupComplete = useCallback(() => {
+    navigate({ name: "project-library" });
+  }, [navigate]);
 
-  const handleSelectProject = (project: Project) => {
+  const handleSelectProject = useCallback((project: Project) => {
     setCurrentProject(project);
-    setCurrentStage(project.current_stage as CreationStage);
-    setView("workspace");
-  };
+    const section = legacyStageToRoute(project.current_stage);
+    navigate({ name: "workspace", projectId: project.id, section });
+  }, [navigate]);
 
-  const handleSelectStage = useCallback((stage: CreationStage) => {
-    setCurrentStage(stage);
-    setView("workspace");
-    // 持久化到数据库，下次打开项目时恢复
+  const handleNavigateSection = useCallback((section: WorkspaceRoute) => {
     if (currentProject) {
-      updateProjectStage(currentProject.id, stage).catch(() => { /* ignore */ });
-      setCurrentProject(prev => prev ? { ...prev, current_stage: stage } : null);
+      // Persist creation progress stage
+      const progress = routeToProgressStage(section);
+      if (progress) {
+        updateProjectStage(currentProject.id, progress).catch(() => { /* ignore */ });
+        setCurrentProject(prev => prev ? { ...prev, current_stage: progress } : null);
+      }
+      navigate({ name: "workspace", projectId: currentProject.id, section });
     }
-  }, [currentProject]);
+  }, [currentProject, navigate]);
 
-  const handleBackToProjects = () => {
-    setCurrentProject(null);
-    setView("project-list");
-  };
-
-  // TitleBar actions for non-sidebar mode
-  const simpleTitleBarActions: TitleBarActions = {
-    onNewProject: handleNewProject,
-    onToggleTheme: toggleTheme,
-    onToggleSidebar: () => {},
-  };
-
-  // Render current view
+  // ── Render content based on route (lazy views wrapped in Suspense) ──
   const renderContent = () => {
-    if (view === "setup") {
+    if (route.name === "setup") {
       return <SetupWizard onComplete={handleSetupComplete} />;
     }
 
-    if (view === "project-list") {
-      return <ProjectList onSelectProject={handleSelectProject} onStartIdeaWizard={() => setView("idea-wizard")} />;
-    }
-
-    if (view === "settings") {
-      return <Settings onBack={currentProject ? () => setView("workspace") : handleBackToProjects} projectId={currentProject?.id ?? null} activeTab={settingsTab} currentProject={currentProject} />;
-    }
-
-    if (view === "idea-wizard") {
+    if (route.name === "project-library") {
       return (
-        <IdeaToProjectWizard
-          onComplete={(project) => {
-            setCurrentProject(project);
-            setCurrentStage("outline");
-            setView("workspace");
-          }}
-          onCancel={() => setView("project-list")}
+        <ProjectList
+          onSelectProject={handleSelectProject}
+          onStartIdeaWizard={(idea) => navigate({ name: "idea-wizard", idea })}
         />
       );
     }
 
-    if (view === "project-profile" && currentProject) {
-      return <ProjectProfileView project={currentProject} />;
+    if (route.name === "idea-wizard") {
+      return (
+        <Suspense fallback={<RouteFallback />}>
+          <IdeaToProjectWizard
+            initialIdea={route.idea}
+            onComplete={(project) => {
+              setCurrentProject(project);
+              navigate({ name: "workspace", projectId: project.id, section: "outline" });
+            }}
+            onCancel={() => navigate({ name: "project-library" })}
+          />
+        </Suspense>
+      );
     }
 
-    // Workspace view
-    if (!currentProject) {
-      return <ProjectList onSelectProject={handleSelectProject} onStartIdeaWizard={() => setView("idea-wizard")} />;
+    if (route.name === "settings") {
+      return (
+        <Suspense fallback={<RouteFallback />}>
+          <Settings
+            onBack={() => goBack()}
+            projectId={currentProject?.id ?? null}
+            activeTab={settingsTab}
+            currentProject={currentProject}
+          />
+        </Suspense>
+      );
     }
 
-    switch (currentStage) {
-      case "outline":
-        return <OutlineEditor project={currentProject} />;
-      case "characters":
-        return <CharacterEditor project={currentProject} />;
-      case "chapters":
-        return <ChapterEditor project={currentProject} />;
-      case "content":
-        return <ContentEditor project={currentProject} />;
-      case "world":
-        return <WorldEditor project={currentProject} />;
-      case "knowledge":
-        return <KnowledgeEditor project={currentProject} />;
+    // Workspace
+    if (route.name === "workspace" && currentProject) {
+      return (
+        <Suspense fallback={<RouteFallback />}>
+          {(() => {
+            switch (route.section) {
+              case "project-profile":
+                return <ProjectProfileView project={currentProject} />;
+              case "outline":
+                return <OutlineEditor project={currentProject} />;
+              case "characters":
+                return <CharacterEditor project={currentProject} />;
+              case "chapters":
+                return <ChapterEditor project={currentProject} />;
+              case "content":
+                return <ContentEditor project={currentProject} />;
+              case "world":
+                return <WorldEditor project={currentProject} />;
+              case "knowledge":
+                return <KnowledgeEditor project={currentProject} />;
+              case "facts":
+                return <FactsEditor project={currentProject} />;
+              case "style":
+                return <StyleWorkspace project={currentProject} />;
+              case "tasks":
+                return <TaskCenter project={currentProject} />;
+              case "settings":
+                return (
+                  <Settings
+                    onBack={() => goBack()}
+                    projectId={currentProject?.id ?? null}
+                    activeTab={settingsTab}
+                    currentProject={currentProject}
+                  />
+                );
+              default:
+                return <OutlineEditor project={currentProject} />;
+            }
+          })()}
+        </Suspense>
+      );
     }
+
+    // Fallback: project library
+    return (
+      <ProjectList
+        onSelectProject={handleSelectProject}
+        onStartIdeaWizard={(idea) => navigate({ name: "idea-wizard", idea })}
+      />
+    );
   };
 
-  // Setup wizard doesn't need sidebar
-  if (view === "setup") {
+  // ── Setup wizard: no shell, just content ──
+  if (route.name === "setup") {
     return (
       <TooltipProvider>
-        <div className="flex flex-col h-screen bg-background text-foreground">
-          <TitleBar actions={simpleTitleBarActions} />
-          <div className="flex-1 overflow-auto min-h-0">
-            {renderContent()}
-          </div>
+        <div className="flex flex-col h-screen" style={{ backgroundColor: "var(--canvas)" }}>
+          {renderContent()}
         </div>
         <Toaster position="bottom-right" richColors closeButton />
       </TooltipProvider>
     );
   }
 
-  // Project list, workspace, and settings all have sidebar
+  // ── Project library: shell without sidebar ──
+  if (route.name === "project-library" || route.name === "idea-wizard") {
+    return (
+      <TooltipProvider>
+        <AppShell
+          hideSidebar
+          currentProject={null}
+          currentSection={null}
+          modelPresetName={currentPreset?.model_name}
+          connected={Boolean(currentPreset)}
+          onNavigate={() => {}}
+          onSwitchProject={() => {}}
+          pageTitle={route.name === "idea-wizard" ? "一句话开书" : "项目库"}
+          pageSubtitle="从一句想法开始你的创作之旅"
+          onBack={() => navigate({ name: "project-library" })}
+          canGoBack={route.name === "idea-wizard"}
+        >
+          {renderContent()}
+        </AppShell>
+        <Toaster position="bottom-right" richColors closeButton />
+      </TooltipProvider>
+    );
+  }
+
+  // ── Settings: shell with sidebar ──
+  if (route.name === "settings") {
+    return (
+      <TooltipProvider>
+        <AppShell
+          currentProject={currentProject}
+          currentSection="settings"
+          modelPresetName={currentPreset?.model_name}
+          connected={Boolean(currentPreset)}
+          onNavigate={(section) => {
+            if (currentProject) {
+              navigate({ name: "workspace", projectId: currentProject.id, section });
+            }
+          }}
+          onSwitchProject={handleSwitchProject}
+          pageTitle="设置"
+          onBack={() => goBack()}
+          canGoBack={canGoBack}
+        >
+          {renderContent()}
+        </AppShell>
+        <Toaster position="bottom-right" richColors closeButton />
+      </TooltipProvider>
+    );
+  }
+
+  // ── Workspace: full shell with sidebar + inspector ──
   return (
     <TooltipProvider>
-      <SidebarProvider>
-        <AppSidebar
-          currentProject={currentProject}
-          currentStage={currentStage}
-          view={view}
-          settingsTab={settingsTab}
-          generatingStage={generatingStage ?? null}
-          onSelectProject={handleSelectProject}
-          onSelectStage={handleSelectStage}
-          onNewProject={handleNewProject}
-          onOpenSettings={handleOpenSettings}
-          onSelectSettingsTab={setSettingsTab}
-          onBackFromSettings={handleBackFromSettings}
-          onOpenProjectProfile={() => setView("project-profile")}
-          onStartIdeaWizard={() => setView("idea-wizard")}
-        />
-        <SidebarInset>
-          <WorkspaceTitleBar onNewProject={handleNewProject} onToggleTheme={toggleTheme} />
-          <main className="flex-1 overflow-hidden">
-            {renderContent()}
-          </main>
-        </SidebarInset>
-      </SidebarProvider>
+      <AppShell
+        currentProject={currentProject}
+        currentSection={currentSection}
+        modelPresetName={currentPreset?.model_name}
+        connected={Boolean(currentPreset)}
+        onNavigate={handleNavigateSection}
+        onSwitchProject={handleSwitchProject}
+        pageTitle={
+          currentProject
+            ? `${currentProject.name} · ${sectionTitle(currentSection ?? "outline")}`
+            : "工作区"
+        }
+        pageSubtitle={generatingStage ? `正在生成：${generatingStage}` : undefined}
+        onBack={() => navigate({ name: "project-library" })}
+        canGoBack={true}
+        navBadges={{}}
+        navLoading={generatingStage ? { [generatingStage as WorkspaceRoute]: true } : {}}
+      >
+        {renderContent()}
+      </AppShell>
       <Toaster position="bottom-right" richColors closeButton />
     </TooltipProvider>
   );
@@ -240,7 +353,11 @@ function AppInner() {
 export default function App() {
   return (
     <AiProvider>
-      <AppInner />
+      <NavigationProvider>
+        <WorkbenchProvider>
+          <AppInner />
+        </WorkbenchProvider>
+      </NavigationProvider>
     </AiProvider>
   );
 }

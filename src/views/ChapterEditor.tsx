@@ -1,8 +1,15 @@
+/**
+ * ChapterEditor — Carbon Frost 章节规划工作台 (Phase E / V7)
+ *
+ * 左侧章节列表（表格行：序号、标题、视角、状态、字数进度、过时原因）
+ * 右侧任务单检查器（完整字段：视角、场景、出场人物、转折点、结果等）
+ * 拖拽排序 + 上移/下移按钮
+ */
+
 import { useEffect, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useChapters } from "@/hooks/useChapters";
 import { useOutline } from "@/hooks/useOutline";
@@ -10,28 +17,41 @@ import { useCharacters } from "@/hooks/useCharacters";
 import { useSettings } from "@/hooks/useSettings";
 import { useAI } from "@/contexts/AIContext";
 import { useAppEvents } from "@/hooks/useAppEvents";
-import { reorderChapters } from "@/lib/tauri";
+import { reorderChapters, moveChapter, listChapterWorkspaceSummaries, updateChapterTaskSheet } from "@/lib/tauri";
 import { StaleAlert } from "@/components/shared/StaleAlert";
 import { FlowGuide } from "@/components/flow/FlowGuide";
 import { GeneratingLoader } from "@/components/shared/GeneratingLoader";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { WorkspacePageLayout } from "@/components/editor/WorkspacePageLayout";
-import { EditorActionBar } from "@/components/editor/EditorActionBar";
-import { ModelPresetSelect } from "@/components/editor/ModelPresetSelect";
-import { EditorStatusText } from "@/components/editor/EditorStatusText";
-import type { Project } from "@/types";
-import { Trash2, Plus, Sparkles, Square, GripVertical, WandSparkles } from "lucide-react";
+import type { Project, ChapterWorkspaceSummary } from "@/types";
+import { Trash2, Plus, Sparkles, Square, WandSparkles, ChevronUp, ChevronDown, GripVertical } from "lucide-react";
 import { toast } from "sonner";
 
+const STATUS_LABELS: Record<string, string> = {
+  planned: "待写",
+  drafting: "撰写中",
+  completed: "已完成",
+  reviewed: "已审核",
+  needs_revision: "需修改",
+};
+
+const STATUS_COLORS: Record<string, string> = {
+  planned: "var(--text-muted)",
+  drafting: "var(--accent)",
+  completed: "var(--success)",
+  reviewed: "var(--info)",
+  needs_revision: "var(--warning)",
+};
+
 export function ChapterEditor({ project }: { project: Project }) {
-  const { chapters, loading, load, create, update, remove } = useChapters(project.id);
+  const { chapters, loading, load, create, remove } = useChapters(project.id);
   const { outline, load: loadOutline } = useOutline(project.id);
   const { characters, load: loadCharacters } = useCharacters(project.id);
   const { currentPreset, currentPresetId, switchPreset, presets } = useSettings();
   const { generating, streamedContent, thinkingContent, generatingStage, error, generate, cancel, generatedCharCount, elapsedMs, generationMeta } = useAI();
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [summaries, setSummaries] = useState<ChapterWorkspaceSummary[]>([]);
 
-  // Task sheet fields
+  // Task sheet fields (all Phase E fields)
   const [editTitle, setEditTitle] = useState("");
   const [editSummary, setEditSummary] = useState("");
   const [editGoal, setEditGoal] = useState("");
@@ -40,12 +60,29 @@ export function ChapterEditor({ project }: { project: Project }) {
   const [editPayoff, setEditPayoff] = useState("");
   const [editMustAvoid, setEditMustAvoid] = useState("");
   const [editTargetWordCount, setEditTargetWordCount] = useState(3000);
+  const [editViewpoint, setEditViewpoint] = useState("");
+  const [editScene, setEditScene] = useState("");
+  const [editCastIds, setEditCastIds] = useState<number[]>([]);
+  const [editTurningPoint, setEditTurningPoint] = useState("");
+  const [editOutcome, setEditOutcome] = useState("");
+  const [editStatus, setEditStatus] = useState("planned");
+  const [editExpectedUpdatedAt, setEditExpectedUpdatedAt] = useState("");
 
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [newSummary, setNewSummary] = useState("");
 
   const [dragId, setDragId] = useState<number | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const loadSummaries = useCallback(async () => {
+    try {
+      const list = await listChapterWorkspaceSummaries(project.id);
+      setSummaries(list);
+    } catch (e) {
+      console.error("Failed to load chapter summaries:", e);
+    }
+  }, [project.id]);
 
   const handleCreateChapter = async () => {
     const nextChapterNumber = chapters.length > 0
@@ -55,9 +92,10 @@ export function ChapterEditor({ project }: { project: Project }) {
     setNewTitle("");
     setNewSummary("");
     setShowAddDialog(false);
+    loadSummaries();
   };
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); loadSummaries(); }, [load, loadSummaries]);
   useEffect(() => { loadOutline(); }, [loadOutline]);
   useEffect(() => { loadCharacters(); }, [loadCharacters]);
 
@@ -77,12 +115,23 @@ export function ChapterEditor({ project }: { project: Project }) {
       setEditPayoff(selectedChapter.payoff);
       setEditMustAvoid(selectedChapter.must_avoid);
       setEditTargetWordCount(selectedChapter.target_word_count);
+      setEditViewpoint(selectedChapter.viewpoint);
+      setEditScene(selectedChapter.scene);
+      try {
+        setEditCastIds(JSON.parse(selectedChapter.cast_character_ids_json || "[]"));
+      } catch { setEditCastIds([]); }
+      setEditTurningPoint(selectedChapter.turning_point);
+      setEditOutcome(selectedChapter.outcome);
+      setEditStatus(selectedChapter.status);
+      setEditExpectedUpdatedAt(selectedChapter.updated_at);
     }
   }, [selectedChapter]);
 
-  const handleSaveSelected = async () => {
-    if (selectedId) {
-      await update(selectedId, {
+  const handleSaveTaskSheet = async () => {
+    if (!selectedId) return;
+    setSaving(true);
+    try {
+      await updateChapterTaskSheet(selectedId, {
         title: editTitle,
         summary: editSummary,
         goal: editGoal,
@@ -91,7 +140,21 @@ export function ChapterEditor({ project }: { project: Project }) {
         payoff: editPayoff,
         must_avoid: editMustAvoid,
         target_word_count: editTargetWordCount,
+        viewpoint: editViewpoint,
+        scene: editScene,
+        cast_character_ids_json: JSON.stringify(editCastIds),
+        turning_point: editTurningPoint,
+        outcome: editOutcome,
+        status: editStatus,
+        expected_updated_at: editExpectedUpdatedAt,
       });
+      await load();
+      loadSummaries();
+      toast.success("任务单已保存");
+    } catch (e) {
+      toast.error("保存失败", { description: String(e) });
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -107,13 +170,14 @@ export function ChapterEditor({ project }: { project: Project }) {
       },
       onComplete: () => {
         load();
+        loadSummaries();
         toast.success("章节目录已生成");
       },
       onError: (err) => {
         toast.error("生成失败", { description: err });
       },
     });
-  }, [currentPreset, generate, project.id, load]);
+  }, [currentPreset, generate, project.id, load, loadSummaries]);
 
   const handlePolish = useCallback(async () => {
     if (!currentPreset) return;
@@ -126,13 +190,14 @@ export function ChapterEditor({ project }: { project: Project }) {
       },
       onComplete: () => {
         load();
+        loadSummaries();
         toast.success("章节目录已润色");
       },
       onError: (err) => {
         toast.error("润色失败", { description: err });
       },
     });
-  }, [currentPreset, generate, project.id, load]);
+  }, [currentPreset, generate, project.id, load, loadSummaries]);
 
   const handleDragStart = (e: React.DragEvent, id: number) => {
     setDragId(id);
@@ -154,12 +219,31 @@ export function ChapterEditor({ project }: { project: Project }) {
     ids.splice(toIdx, 0, dragId);
     await reorderChapters(project.id, ids);
     load();
+    loadSummaries();
     setDragId(null);
+  };
+
+  const handleMoveUp = async (id: number) => {
+    const idx = chapters.findIndex(c => c.id === id);
+    if (idx <= 0) return;
+    const beforeId = chapters[idx - 1].id;
+    await moveChapter(id, beforeId, null);
+    load();
+    loadSummaries();
+  };
+
+  const handleMoveDown = async (id: number) => {
+    const idx = chapters.findIndex(c => c.id === id);
+    if (idx === -1 || idx >= chapters.length - 1) return;
+    const afterId = chapters[idx + 1].id;
+    await moveChapter(id, null, afterId);
+    load();
+    loadSummaries();
   };
 
   useAppEvents({
     onGenerate: handleGenerate,
-    onSave: handleSaveSelected,
+    onSave: handleSaveTaskSheet,
     onSwitchModel: () => {
       if (presets.length > 1 && currentPresetId) {
         const idx = presets.findIndex(p => p.id === currentPresetId);
@@ -169,187 +253,405 @@ export function ChapterEditor({ project }: { project: Project }) {
     },
   });
 
-  if (loading) return <div className="p-6 text-muted-foreground">加载中...</div>;
+  if (loading) return <div className="flex-1 flex items-center justify-center" style={{ color: "var(--text-muted)" }}>加载中...</div>;
 
   return (
-    <WorkspacePageLayout
-      title="章节目录"
-      status={<EditorStatusText generating={generating} idleLabel={`${chapters.length} 章`} />}
-      alerts={
-        <>
-          <FlowGuide stage="chapters" input={{ outlineContent: outline?.content, characterCount: characters.length, chapterCount: chapters.length }} />
-          <StaleAlert projectId={project.id} targetType="chapters" onRegenerate={handleGenerate} />
-          {upstreamIncomplete && (
-            <div className="mx-4 mb-2 sm:mx-6">
-              <Alert>
-                <AlertDescription>
+    <div className="flex flex-1 min-h-0 overflow-hidden">
+      {/* ── Left: Chapter List Area ── */}
+      <div className="flex-1 min-w-0 flex flex-col" style={{ backgroundColor: "var(--canvas)" }}>
+        {/* Toolbar */}
+        <div className="flex items-center justify-between shrink-0" style={{ height: 48, padding: "0 16px", borderBottom: "1px solid var(--border)" }}>
+          <div className="flex items-center gap-2">
+            <span style={{ color: "var(--text-secondary)", fontSize: 13, fontWeight: 600 }}>
+              {chapters.length} 章
+            </span>
+            {summaries.some(s => s.content_stale) && (
+              <span style={{ color: "var(--warning)", fontSize: 11 }}>
+                {summaries.filter(s => s.content_stale).length} 章正文过时
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowAddDialog(true)}
+              style={{ height: 30, borderRadius: "var(--radius-sm)", fontSize: 12, gap: 4 }}
+            >
+              <Plus className="h-3.5 w-3.5" />新建章节
+            </Button>
+            {generating && generatingStage === "chapters" ? (
+              <Button variant="destructive" size="sm" onClick={cancel} style={{ height: 30, borderRadius: "var(--radius-sm)", fontSize: 12, gap: 4 }}>
+                <Square className="h-3.5 w-3.5" />停止
+              </Button>
+            ) : (
+              <>
+                <Button
+                  size="sm"
+                  onClick={handleGenerate}
+                  disabled={!currentPreset || upstreamIncomplete}
+                  style={{ height: 30, borderRadius: "var(--radius-sm)", fontSize: 12, gap: 4 }}
+                >
+                  <Sparkles className="h-3.5 w-3.5" />AI 生成目录
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePolish}
+                  disabled={!currentPreset || chapters.length === 0}
+                  style={{ height: 30, borderRadius: "var(--radius-sm)", fontSize: 12, gap: 4 }}
+                >
+                  <WandSparkles className="h-3.5 w-3.5" />润色
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Alerts */}
+        {(upstreamIncomplete || error) && (
+          <div style={{ padding: "8px 16px" }}>
+            {error && <p style={{ color: "var(--danger)", fontSize: 12 }}>{error}</p>}
+            {upstreamIncomplete && (
+              <Alert style={{ borderRadius: "var(--radius-sm)" }}>
+                <AlertDescription style={{ fontSize: 12 }}>
                   {outlineEmpty ? "请先完成大纲编写" : "请先完成人物设计"}，再生成章节目录
                 </AlertDescription>
               </Alert>
+            )}
+          </div>
+        )}
+
+        {/* Generation view */}
+        {generating && generatingStage === "chapters" ? (
+          <div className="flex-1 overflow-y-auto p-6">
+            <GeneratingLoader
+              thinkingContent={thinkingContent}
+              outputContent={streamedContent}
+              label="正在生成章节目录..."
+              generating={generating}
+              elapsedMs={elapsedMs}
+              charCount={generatedCharCount}
+              modelName={generationMeta?.modelName}
+            />
+          </div>
+        ) : (
+          <>
+            {/* Table Header */}
+            <div className="flex items-center shrink-0" style={{ height: 36, borderBottom: "1px solid var(--border)", backgroundColor: "var(--surface)", padding: "0 16px" }}>
+              <div style={{ width: 44 }} />
+              <div style={{ width: 60, fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>序号</div>
+              <div style={{ width: 220, fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>标题 / 摘要</div>
+              <div style={{ width: 100, fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>视角</div>
+              <div style={{ width: 110, fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>状态</div>
+              <div style={{ width: 150, fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>字数进度</div>
+              <div style={{ flex: 1, fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>备注</div>
             </div>
-          )}
-        </>
-      }
-      error={error ? <p className="text-sm text-destructive">{error}</p> : undefined}
-      actionBar={
-        <EditorActionBar>
-          <Button
-            variant="outline"
-            onClick={() => setShowAddDialog(true)}
-            className="rounded-full px-4 py-2.5 gap-1.5"
-          >
-            <Plus className="h-4 w-4" />新建章节
-          </Button>
-          {generating ? (
-            <Button variant="destructive" onClick={cancel} className="rounded-full px-4 py-2.5 gap-1.5">
-              <Square className="h-4 w-4" />停止生成
-            </Button>
-          ) : (
-            <>
-              <Button onClick={handleGenerate} disabled={!currentPreset || upstreamIncomplete} className="rounded-full px-4 py-2.5 gap-1.5">
-                <Sparkles className="h-4 w-4" />
-                AI 生成目录
-              </Button>
-              <Button
-                variant="outline"
-                onClick={handlePolish}
-                disabled={!currentPreset || chapters.length === 0}
-                className="rounded-full px-4 py-2.5 gap-1.5"
+
+            {/* Chapter Rows */}
+            <div className="flex-1 overflow-y-auto">
+              {chapters.map((chapter) => {
+                const summary = summaries.find(s => s.id === chapter.id);
+                const isSelected = selectedId === chapter.id;
+                return (
+                  <div
+                    key={chapter.id}
+                    draggable
+                    onDragStart={(e) => handleDragStart(e, chapter.id)}
+                    onDragOver={handleDragOver}
+                    onDrop={() => handleDrop(chapter.id)}
+                    onDragEnd={() => setDragId(null)}
+                    onClick={() => setSelectedId(chapter.id)}
+                    className="flex items-center cursor-pointer transition-colors group"
+                    style={{
+                      height: 56,
+                      borderBottom: "1px solid var(--border)",
+                      backgroundColor: isSelected ? "var(--surface-selected)" : "var(--surface)",
+                      opacity: dragId === chapter.id ? 0.5 : 1,
+                      padding: "0 16px",
+                    }}
+                  >
+                    {/* Drag handle */}
+                    <div style={{ width: 44, display: "flex", justifyContent: "center", alignItems: "center" }}>
+                      <GripVertical className="h-4 w-4 opacity-0 group-hover:opacity-100 transition-opacity" style={{ color: "var(--text-muted)" }} />
+                    </div>
+                    {/* Number */}
+                    <div style={{ width: 60, display: "flex", justifyContent: "center", alignItems: "center" }}>
+                      <span style={{ fontFamily: "var(--font-data)", fontSize: 13, color: "var(--text-secondary)" }}>
+                        {chapter.chapter_number}
+                      </span>
+                    </div>
+                    {/* Title + Summary */}
+                    <div style={{ width: 220, overflow: "hidden", padding: "0 8px" }}>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {chapter.title || "未命名"}
+                      </div>
+                      {chapter.summary && (
+                        <div style={{ fontSize: 11, color: "var(--text-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginTop: 2 }}>
+                          {chapter.summary}
+                        </div>
+                      )}
+                    </div>
+                    {/* POV */}
+                    <div style={{ width: 100, display: "flex", justifyContent: "center", alignItems: "center" }}>
+                      <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                        {chapter.viewpoint || "—"}
+                      </span>
+                    </div>
+                    {/* Status */}
+                    <div style={{ width: 110, display: "flex", justifyContent: "center", alignItems: "center" }}>
+                      <span style={{
+                        fontSize: 11,
+                        fontWeight: 600,
+                        padding: "2px 8px",
+                        borderRadius: "var(--radius-sm)",
+                        color: STATUS_COLORS[chapter.status] || "var(--text-muted)",
+                        backgroundColor: "var(--surface-hover)",
+                      }}>
+                        {STATUS_LABELS[chapter.status] || chapter.status}
+                      </span>
+                    </div>
+                    {/* Word progress */}
+                    <div style={{ width: 150, display: "flex", justifyContent: "center", alignItems: "center" }}>
+                      <span style={{ fontFamily: "var(--font-data)", fontSize: 12, color: "var(--text-secondary)" }}>
+                        {summary ? `${summary.word_count.toLocaleString()} / ${chapter.target_word_count.toLocaleString()}` : `0 / ${chapter.target_word_count.toLocaleString()}`}
+                      </span>
+                    </div>
+                    {/* Stale reason / issues */}
+                    <div style={{ flex: 1, display: "flex", alignItems: "center", padding: "0 12px" }}>
+                      {summary?.content_stale && (
+                        <span style={{ fontSize: 12, color: "var(--warning)" }}>正文过时</span>
+                      )}
+                      {!summary?.content_stale && summary && summary.issue_count > 0 && (
+                        <span style={{ fontSize: 12, color: "var(--warning)" }}>{summary.issue_count} 个审核问题</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+              {chapters.length === 0 && !generating && (
+                <div className="flex items-center justify-center" style={{ height: 200, color: "var(--text-muted)" }}>
+                  <span style={{ fontSize: 14 }}>暂无章节</span>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-between shrink-0" style={{ height: 40, borderTop: "1px solid var(--border)", backgroundColor: "var(--surface)", padding: "0 16px" }}>
+              <div className="flex items-center gap-2">
+                <FlowGuide stage="chapters" input={{ outlineContent: outline?.content, characterCount: characters.length, chapterCount: chapters.length }} />
+              </div>
+              <StaleAlert projectId={project.id} targetType="chapters" onRegenerate={handleGenerate} />
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* ── Right: Task Sheet Inspector (320px) ── */}
+      {selectedChapter && !generating && (
+        <div className="shrink-0 flex flex-col overflow-hidden" style={{ width: 320, borderLeft: "1px solid var(--border)", backgroundColor: "var(--surface)" }}>
+          {/* Inspector Header */}
+          <div className="flex items-center justify-between shrink-0" style={{ height: 48, padding: "0 16px", borderBottom: "1px solid var(--border)" }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>章节任务单</span>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => handleMoveUp(selectedChapter.id)}
+                disabled={chapters.findIndex(c => c.id === selectedChapter.id) === 0}
+                title="上移"
+                style={{ padding: 4, borderRadius: "var(--radius-sm)", opacity: chapters.findIndex(c => c.id === selectedChapter.id) === 0 ? 0.3 : 1 }}
               >
-                <WandSparkles className="h-4 w-4" />
-                润色打磨
-              </Button>
-              <ModelPresetSelect
-                value={currentPresetId ?? null}
-                presets={presets}
-                onChange={(v) => switchPreset(v)}
-                placeholder="选择模型"
-              />
-            </>
-          )}
-        </EditorActionBar>
-      }
-    >
-      {/* Main split pane area */}
-      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
-        {/* Chapter list with drag reorder */}
-        <ScrollArea className="w-64 shrink-0 border-r border-border">
-          <div className="space-y-1.5 px-4 py-5 pr-2">
-            {chapters.map((chapter) => (
-              <div
-                key={chapter.id}
-                draggable
-                onDragStart={(e) => handleDragStart(e, chapter.id)}
-                onDragOver={handleDragOver}
-                onDrop={() => handleDrop(chapter.id)}
-                onDragEnd={() => setDragId(null)}
-                className={`flex min-w-0 items-center gap-2 rounded-2xl px-3 py-3 cursor-pointer transition-colors ${
-                  selectedId === chapter.id ? "bg-sidebar-accent" : "hover:bg-accent"
-                } ${dragId === chapter.id ? "opacity-50" : ""}`}
-                onClick={() => setSelectedId(chapter.id)}
+                <ChevronUp className="h-4 w-4" style={{ color: "var(--text-muted)" }} />
+              </button>
+              <button
+                onClick={() => handleMoveDown(selectedChapter.id)}
+                disabled={chapters.findIndex(c => c.id === selectedChapter.id) === chapters.length - 1}
+                title="下移"
+                style={{ padding: 4, borderRadius: "var(--radius-sm)", opacity: chapters.findIndex(c => c.id === selectedChapter.id) === chapters.length - 1 ? 0.3 : 1 }}
               >
-                <GripVertical className="h-4 w-4 text-muted-foreground shrink-0 cursor-grab" />
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium text-sm">第{chapter.chapter_number}章</div>
-                  <div className="text-foreground text-sm truncate">{chapter.title || "未命名"}</div>
-                  {chapter.summary && (
-                    <p className="text-xs text-muted-foreground mt-0.5 truncate">{chapter.summary}</p>
+                <ChevronDown className="h-4 w-4" style={{ color: "var(--text-muted)" }} />
+              </button>
+            </div>
+          </div>
+
+          {/* Inspector Content */}
+          <div className="flex-1 overflow-y-auto" style={{ padding: 16 }}>
+            <div className="flex flex-col" style={{ gap: 14 }}>
+              {/* Title */}
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>标题</label>
+                <Input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} placeholder="章节标题" style={{ fontSize: 14, marginTop: 4 }} />
+              </div>
+
+              {/* Summary */}
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>摘要</label>
+                <Textarea value={editSummary} onChange={(e) => setEditSummary(e.target.value)} placeholder="章节摘要" className="app-scrollbar" style={{ minHeight: 80, resize: "vertical", fontSize: 13, marginTop: 4 }} />
+              </div>
+
+              {/* Status */}
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>状态</label>
+                <div className="flex gap-1.5" style={{ marginTop: 4 }}>
+                  {Object.entries(STATUS_LABELS).map(([key, label]) => (
+                    <button
+                      key={key}
+                      onClick={() => setEditStatus(key)}
+                      style={{
+                        padding: "3px 8px",
+                        borderRadius: "var(--radius-sm)",
+                        fontSize: 11,
+                        fontWeight: 600,
+                        border: "1px solid",
+                        borderColor: editStatus === key ? "var(--accent)" : "var(--border)",
+                        backgroundColor: editStatus === key ? "var(--accent-soft)" : "transparent",
+                        color: editStatus === key ? "var(--accent)" : "var(--text-muted)",
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Viewpoint */}
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>视角</label>
+                <Input value={editViewpoint} onChange={(e) => setEditViewpoint(e.target.value)} placeholder="如：主角方远" style={{ fontSize: 13, marginTop: 4 }} />
+              </div>
+
+              {/* Scene */}
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>场景</label>
+                <Input value={editScene} onChange={(e) => setEditScene(e.target.value)} placeholder="如：雾港码头·夜" style={{ fontSize: 13, marginTop: 4 }} />
+              </div>
+
+              {/* Cast Characters */}
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>出场人物</label>
+                <div className="flex flex-wrap gap-1.5" style={{ marginTop: 4 }}>
+                  {characters.map(char => (
+                    <button
+                      key={char.id}
+                      onClick={() => {
+                        setEditCastIds(prev =>
+                          prev.includes(char.id)
+                            ? prev.filter(id => id !== char.id)
+                            : [...prev, char.id]
+                        );
+                      }}
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: "var(--radius-sm)",
+                        fontSize: 12,
+                        border: "1px solid",
+                        borderColor: editCastIds.includes(char.id) ? "var(--accent)" : "var(--border)",
+                        backgroundColor: editCastIds.includes(char.id) ? "var(--accent-soft)" : "transparent",
+                        color: editCastIds.includes(char.id) ? "var(--accent)" : "var(--text-secondary)",
+                      }}
+                    >
+                      {char.name}
+                    </button>
+                  ))}
+                  {characters.length === 0 && (
+                    <span style={{ fontSize: 12, color: "var(--text-muted)" }}>暂无人物</span>
                   )}
                 </div>
               </div>
-            ))}
-            {chapters.length === 0 && !generating && (
-              <p className="text-muted-foreground text-center py-4 text-sm">暂无章节</p>
-            )}
-          </div>
-        </ScrollArea>
 
-        {/* Edit selected chapter / Streaming view during generation */}
-        <ScrollArea className="min-w-0 flex-1 px-4 py-5 sm:px-8">
-          <div className="min-h-full w-full min-w-0 space-y-3 pr-2 sm:pr-3">
-            {generating && generatingStage === "chapters" ? (
-              <GeneratingLoader
-                thinkingContent={thinkingContent}
-                outputContent={streamedContent}
-                label="正在生成章节目录..."
-                generating={generating}
-                elapsedMs={elapsedMs}
-                charCount={generatedCharCount}
-                modelName={generationMeta?.modelName}
-              />
-            ) : selectedChapter ? (
-              <>
-                <Input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} placeholder="章节标题" className="text-base" />
-                <Textarea value={editSummary} onChange={(e) => setEditSummary(e.target.value)} placeholder="章节摘要" className="app-scrollbar min-h-[120px] resize-y overflow-y-auto bg-background border-border" />
+              {/* Goal */}
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>本章目标</label>
+                <Textarea value={editGoal} onChange={(e) => setEditGoal(e.target.value)} placeholder="本章要完成什么" className="app-scrollbar" style={{ minHeight: 56, resize: "vertical", fontSize: 13, marginTop: 4 }} />
+              </div>
 
-                {/* Task sheet fields */}
-                <div className="space-y-3 rounded-2xl border border-border p-4 bg-card/50">
-                  <h4 className="text-sm font-semibold text-muted-foreground">章节任务单</h4>
-
-                  <div>
-                    <label className="text-xs text-muted-foreground">本章目标</label>
-                    <Textarea value={editGoal} onChange={(e) => setEditGoal(e.target.value)} placeholder="本章要完成什么（如：主角发现关键线索，推动主线前进）" className="app-scrollbar min-h-[60px] resize-y text-sm" />
-                  </div>
-
-                  <div>
-                    <label className="text-xs text-muted-foreground">冲突等级（1=舒缓过渡，5=高潮转折）</label>
-                    <div className="flex items-center gap-2 mt-1">
-                      {[1, 2, 3, 4, 5].map(level => (
-                        <button
-                          key={level}
-                          onClick={() => setEditConflictLevel(level)}
-                          className={`w-8 h-8 rounded-full text-sm font-medium transition-colors ${
-                            editConflictLevel === level
-                              ? "bg-primary text-primary-foreground"
-                              : "bg-muted text-muted-foreground hover:bg-muted/80"
-                          }`}
-                        >
-                          {level}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="text-xs text-muted-foreground">开篇钩子</label>
-                    <Input value={editHook} onChange={(e) => setEditHook(e.target.value)} placeholder="用什么抓住读者注意力（如：以悬念开场）" className="text-sm" />
-                  </div>
-
-                  <div>
-                    <label className="text-xs text-muted-foreground">收束回报</label>
-                    <Input value={editPayoff} onChange={(e) => setEditPayoff(e.target.value)} placeholder="本章结尾给读者什么满足感（如：揭示部分真相）" className="text-sm" />
-                  </div>
-
-                  <div>
-                    <label className="text-xs text-muted-foreground">禁止事项</label>
-                    <Textarea value={editMustAvoid} onChange={(e) => setEditMustAvoid(e.target.value)} placeholder="本章写作中必须避免的内容（如：不要让配角抢戏）" className="app-scrollbar min-h-[60px] resize-y text-sm" />
-                  </div>
-
-                  <div>
-                    <label className="text-xs text-muted-foreground">目标字数</label>
-                    <Input
-                      type="number"
-                      value={editTargetWordCount}
-                      onChange={(e) => setEditTargetWordCount(parseInt(e.target.value) || 0)}
-                      min={0}
-                      className="text-sm w-32"
-                    />
-                  </div>
+              {/* Conflict Level */}
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>冲突等级（1-5）</label>
+                <div className="flex items-center gap-1.5" style={{ marginTop: 4 }}>
+                  {[1, 2, 3, 4, 5].map(level => (
+                    <button
+                      key={level}
+                      onClick={() => setEditConflictLevel(level)}
+                      style={{
+                        width: 30, height: 30,
+                        borderRadius: "var(--radius-sm)",
+                        fontSize: 12, fontWeight: 600,
+                        backgroundColor: editConflictLevel === level ? "var(--accent)" : "var(--surface-hover)",
+                        color: editConflictLevel === level ? "#fff" : "var(--text-muted)",
+                      }}
+                    >
+                      {level}
+                    </button>
+                  ))}
                 </div>
+              </div>
 
-                <div className="flex flex-wrap gap-2">
-                  <Button size="sm" onClick={handleSaveSelected} className="rounded-full">保存</Button>
-                  <Button size="sm" variant="destructive" className="rounded-full" onClick={() => { if (selectedId) remove(selectedId); setSelectedId(null); }}>
-                    <Trash2 className="h-3 w-3" />删除
-                  </Button>
-                </div>
-              </>
-            ) : (
-              <p className="text-muted-foreground text-center py-8">选择左侧章节进行编辑</p>
-            )}
+              {/* Turning Point */}
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>转折点</label>
+                <Textarea value={editTurningPoint} onChange={(e) => setEditTurningPoint(e.target.value)} placeholder="本章的关键转折" className="app-scrollbar" style={{ minHeight: 56, resize: "vertical", fontSize: 13, marginTop: 4 }} />
+              </div>
+
+              {/* Hook */}
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>开篇钩子</label>
+                <Input value={editHook} onChange={(e) => setEditHook(e.target.value)} placeholder="用什么抓住读者" style={{ fontSize: 13, marginTop: 4 }} />
+              </div>
+
+              {/* Payoff */}
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>收束回报</label>
+                <Input value={editPayoff} onChange={(e) => setEditPayoff(e.target.value)} placeholder="结尾给读者什么满足感" style={{ fontSize: 13, marginTop: 4 }} />
+              </div>
+
+              {/* Outcome */}
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>结果</label>
+                <Textarea value={editOutcome} onChange={(e) => setEditOutcome(e.target.value)} placeholder="本章结束时的状态" className="app-scrollbar" style={{ minHeight: 56, resize: "vertical", fontSize: 13, marginTop: 4 }} />
+              </div>
+
+              {/* Must Avoid */}
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>禁止事项</label>
+                <Textarea value={editMustAvoid} onChange={(e) => setEditMustAvoid(e.target.value)} placeholder="必须避免的内容" className="app-scrollbar" style={{ minHeight: 56, resize: "vertical", fontSize: 13, marginTop: 4 }} />
+              </div>
+
+              {/* Target Word Count */}
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase" }}>目标字数</label>
+                <Input
+                  type="number"
+                  value={editTargetWordCount}
+                  onChange={(e) => setEditTargetWordCount(parseInt(e.target.value) || 0)}
+                  min={0}
+                  style={{ fontSize: 13, width: 120, marginTop: 4 }}
+                />
+              </div>
+
+              {/* Actions */}
+              <div className="flex gap-2" style={{ marginTop: 4 }}>
+                <Button size="sm" onClick={handleSaveTaskSheet} disabled={saving} style={{ borderRadius: "var(--radius-sm)", fontSize: 12, flex: 1 }}>
+                  {saving ? "保存中..." : "保存任务单"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  onClick={() => {
+                    if (selectedId) {
+                      remove(selectedId);
+                      setSelectedId(null);
+                      loadSummaries();
+                    }
+                  }}
+                  style={{ borderRadius: "var(--radius-sm)", fontSize: 12 }}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </Button>
+              </div>
+            </div>
           </div>
-        </ScrollArea>
-      </div>
+        </div>
+      )}
 
       {/* New chapter dialog */}
       <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
@@ -373,6 +675,6 @@ export function ChapterEditor({ project }: { project: Project }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </WorkspacePageLayout>
+    </div>
   );
 }

@@ -58,6 +58,12 @@ pub struct Chapter {
     pub payoff: String,
     pub must_avoid: String,
     pub target_word_count: i64,
+    pub viewpoint: String,
+    pub scene: String,
+    pub cast_character_ids_json: String,
+    pub turning_point: String,
+    pub outcome: String,
+    pub status: String,
     pub updated_at: String,
 }
 

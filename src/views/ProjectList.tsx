@@ -1,43 +1,145 @@
-import { useState } from "react";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { useProjects } from "@/hooks/useProjects";
-import type { Project, CreationStage } from "@/types";
-import { CheckCircle2, Circle, BookOpen, Plus, ArrowRight, Sparkles } from "lucide-react";
+/**
+ * ProjectList — Carbon Frost 项目库
+ *
+ * 从旧的居中 600px 大卡片改为全宽生产力列表。
+ * 每行显示：项目名称、题材、创作进度、完成章节/总章节、总字数、最近编辑、过时数量和失败任务。
+ * 继续创作进入真正的最近编辑项目（updated_at DESC 第一条）。
+ * 删除按钮始终可被键盘访问，不只依赖 hover。
+ * 搜索、排序、空状态和新建入口独立。
+ */
 
-const stageLabels: Record<CreationStage, string> = {
+import { useState, useEffect, useCallback, useMemo } from "react";
+import {
+  listProjectSummaries,
+  createProject,
+  deleteProject,
+  touchProjectOpened,
+} from "@/lib/tauri";
+import type { ProjectSummary, Project } from "@/types";
+import {
+  Search, Plus, Sparkles, ArrowRight, Trash2,
+  BookOpen, AlertTriangle, FileText, Users, BookMarked, Pen,
+  ChevronDown, ChevronUp, Loader2,
+} from "lucide-react";
+type SortKey = "updated" | "created" | "name" | "words";
+type SortDir = "asc" | "desc";
+
+const STAGE_LABELS: Record<string, string> = {
   outline: "大纲",
   characters: "人物",
   chapters: "目录",
   content: "正文",
   world: "世界观",
   knowledge: "知识库",
+  framing: "定盘",
 };
 
-const stageOrder: CreationStage[] = ["outline", "characters", "chapters", "content"];
+const STAGE_ICONS: Record<string, typeof FileText> = {
+  outline: FileText,
+  characters: Users,
+  chapters: BookMarked,
+  content: Pen,
+  world: BookOpen,
+  knowledge: BookOpen,
+  framing: FileText,
+};
 
-function getStageStatus(project: Project, stage: CreationStage): "done" | "active" | "pending" {
-  const currentIndex = stageOrder.indexOf(project.current_stage as CreationStage);
-  const stageIndex = stageOrder.indexOf(stage);
-  if (stageIndex < currentIndex) return "done";
-  if (stageIndex === currentIndex) return "active";
-  return "pending";
+function formatDate(iso: string): string {
+  if (!iso) return "—";
+  const d = new Date(iso.replace(" ", "T") + "Z");
+  const now = new Date();
+  const diff = now.getTime() - d.getTime();
+  const mins = Math.floor(diff / 60000);
+  const hours = Math.floor(diff / 3600000);
+  const days = Math.floor(diff / 86400000);
+  if (mins < 1) return "刚刚";
+  if (mins < 60) return `${mins}分钟前`;
+  if (hours < 24) return `${hours}小时前`;
+  if (days < 7) return `${days}天前`;
+  return d.toLocaleDateString("zh-CN");
 }
 
-export function ProjectList({ onSelectProject, onStartIdeaWizard }: { onSelectProject: (project: Project) => void; onStartIdeaWizard: () => void; }) {
-  const { projects, loading, create, remove } = useProjects();
+function formatWordCount(n: number): string {
+  if (n >= 10000) return `${(n / 10000).toFixed(1)}万字`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}千字`;
+  return `${n}字`;
+}
+
+export function ProjectList({
+  onSelectProject,
+  onStartIdeaWizard,
+}: {
+  onSelectProject: (project: Project) => void;
+  onStartIdeaWizard: (idea: string) => void;
+}) {
+  const [summaries, setSummaries] = useState<ProjectSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("updated");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
-  const [deleteId, setDeleteId] = useState<number | null>(null);
-  const [deleteName, setDeleteName] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<ProjectSummary | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [ideaText, setIdeaText] = useState("");
+
+  const refresh = useCallback(async () => {
+    try {
+      setLoading(true);
+      const list = await listProjectSummaries();
+      setSummaries(list);
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  // Filtered + sorted list
+  const filtered = useMemo(() => {
+    let list = summaries;
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      list = list.filter(
+        (s) =>
+          s.name.toLowerCase().includes(q) ||
+          s.genre.toLowerCase().includes(q)
+      );
+    }
+    const sorted = [...list].sort((a, b) => {
+      let cmp = 0;
+      switch (sortKey) {
+        case "updated":
+          cmp = a.updated_at.localeCompare(b.updated_at);
+          break;
+        case "created":
+          cmp = a.created_at.localeCompare(b.created_at);
+          break;
+        case "name":
+          cmp = a.name.localeCompare(b.name, "zh-CN");
+          break;
+        case "words":
+          cmp = a.total_word_count - b.total_word_count;
+          break;
+      }
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+    return sorted;
+  }, [summaries, search, sortKey, sortDir]);
 
   const handleCreate = async () => {
     if (!newName.trim()) return;
     setCreating(true);
     try {
-      const project = await create(newName.trim());
+      const project = await createProject(newName.trim());
       setNewName("");
+      await refresh();
       onSelectProject(project);
     } catch (e) {
       console.error("Failed to create project:", e);
@@ -46,155 +148,684 @@ export function ProjectList({ onSelectProject, onStartIdeaWizard }: { onSelectPr
     }
   };
 
+  const handleContinue = async (summary: ProjectSummary) => {
+    // Touch project to update its opened time
+    await touchProjectOpened(summary.id).catch(() => {});
+    // Construct a Project object from the summary
+    const project: Project = {
+      id: summary.id,
+      name: summary.name,
+      current_stage: summary.current_stage,
+      created_at: summary.created_at,
+      updated_at: summary.updated_at,
+    };
+    onSelectProject(project);
+  };
+
   const handleDelete = async () => {
-    if (deleteId) {
-      await remove(deleteId);
-      setDeleteId(null);
-      setDeleteName("");
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await deleteProject(deleteTarget.id);
+      setSummaries((prev) => prev.filter((s) => s.id !== deleteTarget.id));
+      setDeleteTarget(null);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const toggleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir("desc");
     }
   };
 
   if (loading) {
-    return <div className="flex items-center justify-center h-full text-muted-foreground">加载中...</div>;
+    return (
+      <div
+        className="flex h-full items-center justify-center"
+        style={{ color: "var(--text-muted)" }}
+      >
+        <Loader2 className="animate-spin" style={{ width: 20, height: 20 }} />
+      </div>
+    );
   }
 
   return (
-    <div className="flex items-center justify-center h-full p-10">
-      <div className="w-[600px] rounded-3xl border border-border shadow-lg bg-card">
-        {/* Card Header — matches design: Welcome title + description */}
-        <div className="px-10 pt-6 pb-4">
-          <h2 className="text-xl font-semibold text-foreground">欢迎回来</h2>
-          <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
-            选择左侧项目继续创作，或创建新项目开始你的故事
+    <div className="flex h-full overflow-hidden">
+      {/* Left: Recent Projects Panel (380px) */}
+      <div
+        className="flex flex-col shrink-0 border-r"
+        style={{
+          width: 380,
+          backgroundColor: "var(--surface)",
+          borderColor: "var(--border)",
+        }}
+      >
+        {/* Header */}
+        <div
+          className="flex flex-col gap-1 shrink-0 border-b"
+          style={{
+            padding: "16px 20px",
+            borderColor: "var(--border)",
+          }}
+        >
+          <h2
+            style={{
+              fontFamily: "var(--font-heading)",
+              fontSize: 18,
+              fontWeight: 600,
+              color: "var(--text-primary)",
+            }}
+          >
+            最近项目
+          </h2>
+          <p style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            {summaries.length > 0
+              ? `${summaries.length} 个项目`
+              : "从一句想法开始你的创作"}
           </p>
         </div>
 
-        {/* Card Content — Stage progress for each project */}
-        <div className="px-10 py-4 space-y-3">
-          {projects.length > 0 && (
-            <p className="text-sm font-medium text-foreground">创作进度</p>
-          )}
-          {projects.map((project) => (
-            <div
-              key={project.id}
-              className="flex items-center gap-3 p-4 rounded-2xl hover:bg-accent cursor-pointer group transition-colors"
-              onClick={() => onSelectProject(project)}
-            >
-              <BookOpen className="h-5 w-5 text-muted-foreground shrink-0" />
-              <span className="font-medium text-foreground">{project.name}</span>
-              <div className="flex gap-2 ml-auto">
-                {stageOrder.map((stage) => {
-                  const status = getStageStatus(project, stage);
-                  return (
-                    <span
-                      key={stage}
-                      className={`flex items-center gap-1 text-xs px-3 py-1 rounded-full ${
-                        status === "done" || status === "active"
-                          ? "bg-primary text-primary-foreground"
-                          : "bg-secondary text-muted-foreground"
-                      }`}
-                    >
-                      {status === "done" ? (
-                        <CheckCircle2 className="h-3.5 w-3.5" />
-                      ) : (
-                        <Circle className="h-3.5 w-3.5" />
-                      )}
-                      {stageLabels[stage]}
-                    </span>
-                  );
-                })}
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="opacity-0 group-hover:opacity-100 text-destructive rounded-full ml-2"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setDeleteId(project.id);
-                  setDeleteName(project.name);
-                }}
-              >
-                删除
-              </Button>
-            </div>
-          ))}
-          {projects.length === 0 && (
-            <p className="text-center text-muted-foreground py-4">
-              还没有项目，点击下方按钮开始创作
-            </p>
-          )}
-        </div>
-
-        {/* Card Actions — matches design: Continue + New Project buttons + shortcut */}
-        <div className="flex items-center gap-2 px-10 py-4">
-          {projects.length > 0 && (
-            <Button
-              className="rounded-full px-4 py-2.5 gap-1.5"
-              onClick={() => {
-                const lastProject = projects[projects.length - 1];
-                if (lastProject) onSelectProject(lastProject);
-              }}
-            >
-              <ArrowRight className="h-4 w-4" />
-              继续创作
-            </Button>
-          )}
-          <Button
-            variant="secondary"
-            className="rounded-full px-4 py-2.5 gap-1.5"
-            onClick={onStartIdeaWizard}
-          >
-            <Sparkles className="h-4 w-4" />
-            一句话开书
-          </Button>
-          <Button
-            variant="outline"
-            className="rounded-full px-4 py-2.5 gap-1.5"
-            onClick={() => {
-              // Focus the input for creating
-              const input = document.querySelector<HTMLInputElement>("#new-project-input");
-              if (input) input.focus();
+        {/* Search */}
+        <div
+          className="flex items-center gap-2 shrink-0"
+          style={{ padding: "12px 16px" }}
+        >
+          <div
+            className="flex items-center gap-2 flex-1 rounded-md border"
+            style={{
+              height: 32,
+              padding: "0 10px",
+              backgroundColor: "var(--canvas)",
+              borderColor: "var(--border)",
             }}
           >
-            <Plus className="h-4 w-4" />
-            新建项目
-          </Button>
-          <span className="text-xs text-muted-foreground ml-1">Ctrl+N 新建</span>
+            <Search style={{ width: 14, height: 14, color: "var(--text-muted)" }} />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="搜索项目名称或题材"
+              style={{
+                flex: 1,
+                border: "none",
+                outline: "none",
+                background: "transparent",
+                color: "var(--text-primary)",
+                fontSize: 13,
+              }}
+            />
+          </div>
         </div>
 
-        {/* Inline new project input */}
-        <div className="flex items-center gap-2 px-10 pb-6">
-          <Input
-            id="new-project-input"
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            placeholder="输入项目名称"
-            className="rounded-xl"
-            onKeyDown={(e) => e.key === "Enter" && handleCreate()}
+        {/* Sort header */}
+        <div
+          className="flex items-center gap-2 shrink-0"
+          style={{
+            padding: "0 16px 6px",
+            fontSize: 11,
+            color: "var(--text-muted)",
+          }}
+        >
+          <SortButton
+            label="编辑时间"
+            active={sortKey === "updated"}
+            dir={sortDir}
+            onClick={() => toggleSort("updated")}
           />
-          <Button
-            onClick={handleCreate}
-            disabled={creating || !newName.trim()}
-            className="rounded-full px-4"
-          >
-            创建
-          </Button>
+          <span style={{ color: "var(--border-strong)" }}>·</span>
+          <SortButton
+            label="字数"
+            active={sortKey === "words"}
+            dir={sortDir}
+            onClick={() => toggleSort("words")}
+          />
+          <span style={{ color: "var(--border-strong)" }}>·</span>
+          <SortButton
+            label="名称"
+            active={sortKey === "name"}
+            dir={sortDir}
+            onClick={() => toggleSort("name")}
+          />
+        </div>
+
+        {/* Project list */}
+        <div className="flex-1 overflow-y-auto app-scrollbar">
+          {filtered.length > 0 ? (
+            filtered.map((summary, idx) => (
+              <ProjectRow
+                key={summary.id}
+                summary={summary}
+                isFirst={idx === 0}
+                onSelect={() => handleContinue(summary)}
+                onDelete={() => setDeleteTarget(summary)}
+              />
+            ))
+          ) : (
+            <div
+              className="flex flex-col items-center justify-center gap-3"
+              style={{ height: "100%", padding: 40, color: "var(--text-muted)" }}
+            >
+              <BookOpen style={{ width: 32, height: 32 }} />
+              <p style={{ fontSize: 13 }}>
+                {search.trim()
+                  ? `没有找到匹配 "${search}" 的项目`
+                  : "还没有项目，点击右侧创建第一本书"}
+              </p>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Delete confirmation dialog */}
-      <Dialog open={deleteId !== null} onOpenChange={(open) => !open && setDeleteId(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>确认删除</DialogTitle>
-          </DialogHeader>
-          <p>确定要删除项目 "{deleteName}" 吗？所有关联数据将一并删除。</p>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteId(null)} className="rounded-full">取消</Button>
-            <Button variant="destructive" onClick={handleDelete} className="rounded-full">删除</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* Right: New Book Workspace */}
+      <div
+        className="flex flex-col flex-1 items-center overflow-y-auto app-scrollbar"
+        style={{
+          backgroundColor: "#10161E",
+          padding: "48px 0 24px",
+        }}
+      >
+        <div style={{ width: 760 }}>
+          {/* Hero */}
+          <div className="flex flex-col gap-3" style={{ marginBottom: 30 }}>
+            <h1
+              style={{
+                fontFamily: "var(--font-heading)",
+                fontSize: 28,
+                fontWeight: 600,
+                color: "var(--text-primary)",
+              }}
+            >
+              开始你的故事
+            </h1>
+            <p style={{ fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+              从一句灵感出发，AI 帮你构建故事方向、人物和大纲。
+              <br />
+              也可以直接创建空白项目，自己掌控每一步。
+            </p>
+          </div>
+
+          {/* Story Idea Composer */}
+          <div
+            className="flex flex-col gap-3 rounded-lg border"
+            style={{
+              padding: 16,
+              backgroundColor: "var(--surface)",
+              borderColor: "var(--border-strong)",
+              boxShadow: "0 8px 24px rgba(0,0,0,0.33)",
+            }}
+          >
+            <div className="flex items-center gap-2">
+              <Sparkles style={{ width: 16, height: 16, color: "var(--accent)" }} />
+              <span
+                style={{
+                  fontSize: 14,
+                  fontWeight: 600,
+                  color: "var(--text-primary)",
+                }}
+              >
+                一句话开书
+              </span>
+            </div>
+            <textarea
+              value={ideaText}
+              onChange={(e) => setIdeaText(e.target.value)}
+              placeholder="输入你的故事灵感，例如：一个失忆的法医在每具尸体上发现属于自己的线索…"
+              style={{
+                width: "100%",
+                minHeight: 72,
+                border: "none",
+                outline: "none",
+                background: "transparent",
+                color: "var(--text-primary)",
+                fontSize: 14,
+                lineHeight: 1.6,
+                resize: "none",
+                fontFamily: "var(--font-ui)",
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && ideaText.trim()) {
+                  onStartIdeaWizard(ideaText.trim());
+                }
+              }}
+            />
+            <div className="flex items-center justify-between">
+              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                AI 将生成 3 个故事方向供你选择
+              </span>
+              <button
+                onClick={() => ideaText.trim() && onStartIdeaWizard(ideaText.trim())}
+                disabled={!ideaText.trim()}
+                className="flex items-center gap-2 rounded-md transition-colors disabled:opacity-50"
+                style={{
+                  height: 32,
+                  padding: "0 14px",
+                  backgroundColor: "var(--accent)",
+                  color: "#FFFFFF",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  border: "none",
+                  cursor: ideaText.trim() ? "pointer" : "not-allowed",
+                }}
+              >
+                <Sparkles style={{ width: 14, height: 14 }} />
+                生成方向
+              </button>
+            </div>
+          </div>
+
+          {/* Divider */}
+          <div
+            style={{
+              height: 1,
+              backgroundColor: "var(--border)",
+              margin: "22px 0",
+            }}
+          />
+
+          {/* Manual Project Option */}
+          <div className="flex items-center justify-between" style={{ marginBottom: 22 }}>
+            <div className="flex flex-col gap-1">
+              <span
+                style={{
+                  fontSize: 14,
+                  fontWeight: 500,
+                  color: "var(--text-primary)",
+                }}
+              >
+                直接创建空白项目
+              </span>
+              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                从零开始，自己掌控每一步
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleCreate()}
+                placeholder="项目名称"
+                style={{
+                  width: 200,
+                  height: 32,
+                  padding: "0 10px",
+                  border: "1px solid var(--border)",
+                  borderRadius: 6,
+                  background: "var(--surface)",
+                  color: "var(--text-primary)",
+                  fontSize: 13,
+                  outline: "none",
+                }}
+              />
+              <button
+                onClick={handleCreate}
+                disabled={creating || !newName.trim()}
+                className="flex items-center gap-2 rounded-md transition-colors disabled:opacity-50"
+                style={{
+                  height: 32,
+                  padding: "0 14px",
+                  backgroundColor: "var(--surface)",
+                  color: "var(--text-primary)",
+                  border: "1px solid var(--border-strong)",
+                  fontSize: 13,
+                  fontWeight: 500,
+                  cursor: creating ? "not-allowed" : "pointer",
+                }}
+              >
+                <Plus style={{ width: 14, height: 14 }} />
+                创建
+              </button>
+            </div>
+          </div>
+
+          {/* Readiness checklist for first run */}
+          {summaries.length === 0 && (
+            <div
+              className="flex flex-col gap-3"
+              style={{
+                paddingTop: 18,
+                borderTop: "1px solid var(--border)",
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 13,
+                  fontWeight: 500,
+                  color: "var(--text-secondary)",
+                }}
+              >
+                新手指南
+              </span>
+              {[
+                "配置 AI 模型（已完成）",
+                "创建第一个项目或使用一句话开书",
+                "编写或生成大纲",
+                "创建人物和章节规划",
+                "开始正文创作",
+              ].map((step, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <span
+                    style={{
+                      width: 18,
+                      height: 18,
+                      borderRadius: "50%",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: 11,
+                      backgroundColor: i === 0 ? "var(--success)" : "var(--surface-raised)",
+                      color: i === 0 ? "#FFFFFF" : "var(--text-muted)",
+                    }}
+                  >
+                    {i + 1}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: 13,
+                      color: i === 0 ? "var(--text-primary)" : "var(--text-muted)",
+                    }}
+                  >
+                    {step}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {error && (
+            <div
+              style={{
+                marginTop: 16,
+                padding: "8px 12px",
+                borderRadius: 6,
+                backgroundColor: "var(--danger-soft)",
+                color: "var(--danger)",
+                fontSize: 13,
+              }}
+            >
+              {error}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Delete Confirmation Dialog */}
+      {deleteTarget && (
+        <DeleteDialog
+          target={deleteTarget}
+          deleting={deleting}
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={handleDelete}
+        />
+      )}
+    </div>
+  );
+}
+
+function ProjectRow({
+  summary,
+  isFirst,
+  onSelect,
+  onDelete,
+}: {
+  summary: ProjectSummary;
+  isFirst: boolean;
+  onSelect: () => void;
+  onDelete: () => void;
+}) {
+  const StageIcon = STAGE_ICONS[summary.current_stage] ?? FileText;
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+      className="flex flex-col gap-2 cursor-pointer transition-colors"
+      style={{
+        padding: "12px 16px",
+        borderBottom: "1px solid var(--border)",
+        borderLeft: isFirst ? "2px solid var(--accent)" : "2px solid transparent",
+      }}
+      onMouseEnter={(e) =>
+        (e.currentTarget.style.backgroundColor = "var(--surface-hover)")
+      }
+      onMouseLeave={(e) =>
+        (e.currentTarget.style.backgroundColor = "transparent")
+      }
+    >
+      {/* Row 1: Name + Stage + Continue hint */}
+      <div className="flex items-center gap-2">
+        <StageIcon style={{ width: 14, height: 14, color: "var(--text-muted)" }} />
+        <span
+          className="min-w-0 truncate"
+          style={{
+            fontSize: 14,
+            fontWeight: 600,
+            color: "var(--text-primary)",
+          }}
+        >
+          {summary.name}
+        </span>
+        {isFirst && (
+          <span
+            className="flex items-center gap-1 shrink-0"
+            style={{
+              fontSize: 11,
+              color: "var(--accent)",
+            }}
+          >
+            <ArrowRight style={{ width: 10, height: 10 }} />
+            继续
+          </span>
+        )}
+      </div>
+
+      {/* Row 2: Stats */}
+      <div className="flex items-center gap-3 flex-wrap">
+        {summary.genre && (
+          <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+            {summary.genre}
+          </span>
+        )}
+        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+          {STAGE_LABELS[summary.current_stage] ?? summary.current_stage}
+        </span>
+        {summary.total_chapters > 0 && (
+          <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+            {summary.completed_chapters}/{summary.total_chapters} 章
+          </span>
+        )}
+        {summary.total_word_count > 0 && (
+          <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+            {formatWordCount(summary.total_word_count)}
+          </span>
+        )}
+        {summary.stale_count > 0 && (
+          <span
+            className="flex items-center gap-0.5"
+            style={{ fontSize: 11, color: "var(--warning)" }}
+          >
+            <AlertTriangle style={{ width: 10, height: 10 }} />
+            {summary.stale_count} 过时
+          </span>
+        )}
+        {summary.failed_job_count > 0 && (
+          <span style={{ fontSize: 11, color: "var(--danger)" }}>
+            {summary.failed_job_count} 失败
+          </span>
+        )}
+        <span style={{ fontSize: 11, color: "var(--text-muted)", marginLeft: "auto" }}>
+          {formatDate(summary.updated_at)}
+        </span>
+        {/* Delete button — always visible, keyboard accessible */}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+          className="flex items-center justify-center rounded-md transition-colors"
+          style={{
+            width: 24,
+            height: 24,
+            color: "var(--text-muted)",
+            border: "1px solid transparent",
+            background: "transparent",
+            cursor: "pointer",
+          }}
+          title="删除项目"
+          aria-label={`删除项目 ${summary.name}`}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = "var(--danger)";
+            e.currentTarget.style.borderColor = "var(--border)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = "var(--text-muted)";
+            e.currentTarget.style.borderColor = "transparent";
+          }}
+        >
+          <Trash2 style={{ width: 12, height: 12 }} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SortButton({
+  label,
+  active,
+  dir,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  dir: SortDir;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex items-center gap-0.5 transition-colors"
+      style={{
+        color: active ? "var(--text-secondary)" : "var(--text-muted)",
+        fontWeight: active ? 500 : 400,
+        background: "transparent",
+        border: "none",
+        cursor: "pointer",
+        fontSize: 11,
+      }}
+    >
+      {label}
+      {active &&
+        (dir === "asc" ? (
+          <ChevronUp style={{ width: 10, height: 10 }} />
+        ) : (
+          <ChevronDown style={{ width: 10, height: 10 }} />
+        ))}
+    </button>
+  );
+}
+
+function DeleteDialog({
+  target,
+  deleting,
+  onCancel,
+  onConfirm,
+}: {
+  target: ProjectSummary;
+  deleting: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 flex items-center justify-center"
+      style={{
+        backgroundColor: "rgba(0,0,0,0.6)",
+        zIndex: 50,
+      }}
+      onClick={onCancel}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="flex flex-col gap-4 rounded-lg border"
+        style={{
+          width: 440,
+          padding: 24,
+          backgroundColor: "var(--surface-raised)",
+          borderColor: "var(--border-strong)",
+          boxShadow: "0 12px 40px rgba(0,0,0,0.5)",
+        }}
+      >
+        <h3
+          style={{
+            fontFamily: "var(--font-heading)",
+            fontSize: 18,
+            fontWeight: 600,
+            color: "var(--text-primary)",
+          }}
+        >
+          确认删除项目
+        </h3>
+        <p style={{ fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+          确定要删除项目 "{target.name}" 吗？
+        </p>
+        <div
+          style={{
+            padding: "8px 12px",
+            borderRadius: 6,
+            backgroundColor: "var(--danger-soft)",
+            fontSize: 12,
+            color: "var(--danger)",
+          }}
+        >
+          所有关联数据将一并删除，包括大纲、人物、章节、正文、快照和生成记录。此操作不可撤销。
+        </div>
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="rounded-md transition-colors"
+            style={{
+              height: 36,
+              padding: "0 16px",
+              backgroundColor: "var(--surface)",
+              color: "var(--text-secondary)",
+              border: "1px solid var(--border-strong)",
+              fontSize: 13,
+              fontWeight: 500,
+              cursor: "pointer",
+            }}
+          >
+            取消
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={deleting}
+            className="rounded-md transition-colors disabled:opacity-50"
+            style={{
+              height: 36,
+              padding: "0 16px",
+              backgroundColor: "var(--danger)",
+              color: "#FFFFFF",
+              border: "none",
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: deleting ? "not-allowed" : "pointer",
+            }}
+          >
+            {deleting ? "删除中…" : "删除"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -348,6 +348,75 @@ CREATE INDEX IF NOT EXISTS idx_tool_call_logs_session
 ON tool_call_logs(session_id);
 ";
 
+/// Migrate chapters table: add Phase E task sheet fields
+fn migrate_chapters_phase_e(conn: &Connection) -> SqlResult<()> {
+    add_column_if_missing(conn, "chapters", "viewpoint", "TEXT DEFAULT ''")?;
+    add_column_if_missing(conn, "chapters", "scene", "TEXT DEFAULT ''")?;
+    add_column_if_missing(conn, "chapters", "cast_character_ids_json", "TEXT DEFAULT '[]'")?;
+    add_column_if_missing(conn, "chapters", "turning_point", "TEXT DEFAULT ''")?;
+    add_column_if_missing(conn, "chapters", "outcome", "TEXT DEFAULT ''")?;
+    add_column_if_missing(conn, "chapters", "status", "TEXT DEFAULT 'planned'")?;
+    Ok(())
+}
+
+/// Phase F: Add session_id to generation_logs, progress fields to jobs
+fn migrate_phase_f(conn: &Connection) -> SqlResult<()> {
+    add_column_if_missing(conn, "generation_logs", "session_id", "TEXT DEFAULT ''")?;
+    add_column_if_missing(conn, "generation_logs", "task_type", "TEXT DEFAULT ''")?;
+    add_column_if_missing(conn, "jobs", "progress_current", "INTEGER DEFAULT 0")?;
+    add_column_if_missing(conn, "jobs", "progress_total", "INTEGER DEFAULT 0")?;
+    add_column_if_missing(conn, "jobs", "cancel_requested", "INTEGER DEFAULT 0")?;
+    Ok(())
+}
+
+/// Phase H: Add performance indexes for project summaries, chapter summaries,
+/// task center queries, and asset filtering.
+fn migrate_phase_h(conn: &Connection) -> SqlResult<()> {
+    // Chapter listing by project ordered by sort_order (list_chapter_workspace_summaries)
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_chapters_project_sort
+         ON chapters(project_id, sort_order)"
+    )?;
+
+    // Generation logs by project + started_at (task center timeline)
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_generation_logs_project
+         ON generation_logs(project_id, started_at)"
+    )?;
+
+    // Generation logs by session_id (cancel + retry lookups)
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_generation_logs_session
+         ON generation_logs(session_id)"
+    )?;
+
+    // Contents by project (project summary aggregation)
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_contents_project
+         ON contents(project_id)"
+    )?;
+
+    // Stale markers by project (project summary stale count)
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_stale_markers_project
+         ON stale_markers(project_id)"
+    )?;
+
+    // Characters by project (project summary character count + list_characters)
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_characters_project
+         ON characters(project_id, sort_order)"
+    )?;
+
+    // Jobs by project + status (task center job filter)
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_project_status
+         ON jobs(project_id, status, created_at)"
+    )?;
+
+    Ok(())
+}
+
 /// Run all migrations on the database
 pub fn run(conn: &Connection) -> SqlResult<()> {
     conn.execute_batch(MIGRATION_001)?;
@@ -359,5 +428,8 @@ pub fn run(conn: &Connection) -> SqlResult<()> {
     conn.execute_batch(MIGRATION_006)?;
     conn.execute_batch(MIGRATION_007)?;
     conn.execute_batch(MIGRATION_008)?;
+    migrate_chapters_phase_e(conn)?;
+    migrate_phase_f(conn)?;
+    migrate_phase_h(conn)?;
     Ok(())
 }

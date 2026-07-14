@@ -352,6 +352,8 @@ pub async fn generate_outline(
         command: crate::ai::tasks::task_type::CMD_GENERATE_OUTLINE.to_string(),
         model_name: preset.model_name,
         input_chars: existing_content.len(),
+        session_id: session_id.clone(),
+        task_type: crate::ai::tasks::task_type::OUTLINE.to_string(),
     };
 
     crate::ai::tasks::service::AiTaskService::execute(
@@ -586,7 +588,9 @@ pub async fn generate_characters(
         target_id: None,
         command: crate::ai::tasks::task_type::CMD_GENERATE_CHARACTERS.to_string(),
         model_name: preset.model_name,
-        input_chars: outline_content.len(),
+                input_chars: outline_content.len(),
+        session_id: session_id.clone(),
+        task_type: crate::ai::tasks::task_type::CHARACTERS.to_string(),
     };
 
     let content = crate::ai::tasks::service::AiTaskService::execute_without_done(
@@ -737,6 +741,8 @@ pub async fn generate_chapters(
         command: crate::ai::tasks::task_type::CMD_GENERATE_CHAPTERS.to_string(),
         model_name: preset.model_name,
         input_chars: outline_content.len() + characters_summary.len(),
+        session_id: session_id.clone(),
+        task_type: crate::ai::tasks::task_type::CHAPTERS.to_string(),
     };
 
     let content = crate::ai::tasks::service::AiTaskService::execute_without_done(
@@ -821,6 +827,8 @@ pub async fn generate_content(
         command: crate::ai::tasks::task_type::CMD_GENERATE_CONTENT.to_string(),
         model_name: preset.model_name,
         input_chars: outline_content.len() + characters_summary.len() + chapter.title.len() + chapter.summary.len(),
+        session_id: session_id.clone(),
+        task_type: crate::ai::tasks::task_type::CONTENT.to_string(),
     };
 
     crate::ai::tasks::service::AiTaskService::execute(
@@ -892,6 +900,8 @@ pub async fn chapter_aftercare(
         command: crate::ai::tasks::task_type::CMD_AFTERCARE.to_string(),
         model_name: preset.model_name,
         input_chars: content_text.len() + outline_content.len() + characters_summary.len(),
+        session_id: session_id.clone(),
+        task_type: crate::ai::tasks::task_type::AFTERCARE.to_string(),
     };
 
     crate::ai::tasks::service::AiTaskService::execute(
@@ -936,6 +946,8 @@ pub async fn analyze_text(
         command: crate::ai::tasks::task_type::CMD_ANALYZE_TEXT.to_string(),
         model_name: preset.model_name,
         input_chars: content.len(),
+        session_id: session_id.clone(),
+        task_type: crate::ai::tasks::task_type::KNOWLEDGE.to_string(),
     };
 
     crate::ai::tasks::service::AiTaskService::execute(
@@ -980,6 +992,8 @@ pub async fn extract_style_rules(
         command: crate::ai::tasks::task_type::CMD_EXTRACT_RULES.to_string(),
         model_name: preset.model_name,
         input_chars: content.len(),
+        session_id: session_id.clone(),
+        task_type: crate::ai::tasks::task_type::STYLE_RULES.to_string(),
     };
 
     crate::ai::tasks::service::AiTaskService::execute(
@@ -1025,6 +1039,8 @@ pub async fn generate_character_from_description(
         command: crate::ai::tasks::task_type::CMD_GENERATE_CHARACTER_FROM_DESC.to_string(),
         model_name: preset.model_name,
         input_chars: description.len() + outline_content.len(),
+        session_id: session_id.clone(),
+        task_type: crate::ai::tasks::task_type::CHARACTERS.to_string(),
     };
 
     let content = crate::ai::tasks::service::AiTaskService::execute_without_done(
@@ -1090,6 +1106,8 @@ pub async fn polish_content(
         command: crate::ai::tasks::task_type::CMD_POLISH_CONTENT.to_string(),
         model_name: preset.model_name,
         input_chars: original_content.len(),
+        session_id: session_id.clone(),
+        task_type: crate::ai::tasks::task_type::POLISH.to_string(),
     };
 
     crate::ai::tasks::service::AiTaskService::execute(
@@ -1154,6 +1172,8 @@ pub async fn polish_chapter(
         command: crate::ai::tasks::task_type::CMD_POLISH_CHAPTER.to_string(),
         model_name: preset.model_name,
         input_chars: original_chapters.len(),
+        session_id: session_id.clone(),
+        task_type: crate::ai::tasks::task_type::POLISH.to_string(),
     };
 
     let content = crate::ai::tasks::service::AiTaskService::execute_without_done(
@@ -1218,6 +1238,8 @@ pub async fn generate_idea_directions(
         command: crate::ai::tasks::task_type::CMD_GENERATE_IDEA_DIRECTIONS.to_string(),
         model_name: preset.model_name,
         input_chars: idea.len(),
+        session_id: session_id.clone(),
+        task_type: crate::ai::tasks::task_type::IDEA.to_string(),
     };
 
     let content = crate::ai::tasks::service::AiTaskService::execute(
@@ -1273,6 +1295,8 @@ pub async fn generate_outline_from_direction(
         command: crate::ai::tasks::task_type::CMD_GENERATE_OUTLINE_FROM_DIRECTION.to_string(),
         model_name: preset.model_name,
         input_chars: direction_json.len(),
+        session_id: session_id.clone(),
+        task_type: crate::ai::tasks::task_type::OUTLINE.to_string(),
     };
 
     crate::ai::tasks::service::AiTaskService::execute(
@@ -1354,6 +1378,8 @@ pub async fn review_chapter_content(
         command: crate::ai::tasks::task_type::CMD_REVIEW_CHAPTER.to_string(),
         model_name: preset.model_name.clone(),
         input_chars: content.len() + outline_content.len() + characters_summary.len(),
+        session_id: session_id.clone(),
+        task_type: crate::ai::tasks::task_type::REVIEW.to_string(),
     };
 
     let raw_content = crate::ai::tasks::service::AiTaskService::execute(
@@ -1477,6 +1503,8 @@ pub async fn repair_chapter_content(
         command: crate::ai::tasks::task_type::CMD_REPAIR_CHAPTER.to_string(),
         model_name: preset.model_name,
         input_chars,
+        session_id: session_id.clone(),
+        task_type: crate::ai::tasks::task_type::REVIEW.to_string(),
     };
 
     crate::ai::tasks::service::AiTaskService::execute(

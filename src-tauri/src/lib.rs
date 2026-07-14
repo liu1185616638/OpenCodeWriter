@@ -38,12 +38,16 @@ pub fn run() {
             commands::chapters::update_chapter,
             commands::chapters::delete_chapter,
             commands::chapters::reorder_chapters,
+            commands::chapters::move_chapter,
+            commands::chapters::list_chapter_workspace_summaries,
+            commands::chapters::update_chapter_task_sheet,
             commands::chapters::list_chapter_reviews,
             // Contents
             commands::contents::get_content,
             commands::contents::save_content,
             commands::contents::mark_content_stale,
             commands::contents::list_stale_contents,
+            commands::contents::get_content_workspace,
             // Settings
             commands::settings::get_setting,
             commands::settings::set_setting,
@@ -137,7 +141,17 @@ pub fn run() {
             commands::runtime_tools::list_mcp_tools,
             commands::runtime_tools::approve_mcp_call,
             commands::runtime_tools::deny_mcp_call,
-            commands::runtime_tools::list_mcp_call_logs,
+                        commands::runtime_tools::list_mcp_call_logs,
+            // Workbench Queries (Phase C)
+            commands::workbench_queries::list_project_summaries,
+            commands::workbench_queries::test_model_connection,
+            commands::workbench_queries::complete_setup,
+            commands::workbench_queries::touch_project_opened,
+            commands::workbench_queries::preview_profile_change_impact,
+            // Task Center (Phase F)
+            commands::task_center::list_task_center_items,
+            commands::task_center::cancel_ai_session,
+            commands::task_center::get_retry_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,10 +1,19 @@
-import { useEffect, useState, useCallback } from "react";
+/**
+ * KnowledgeEditor — 知识库工作区 (Phase G)
+ *
+ * 增强：
+ * - 文件导入（txt/md）
+ * - 资料列表、详情、搜索结果分区
+ * - 显示分块数、来源类型、导入时间
+ * - 召回记录（最近生成日志）
+ */
+
+import { useEffect, useState, useCallback, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
 import { useKnowledge } from "@/hooks/useKnowledge";
 import { useSettings } from "@/hooks/useSettings";
@@ -14,8 +23,9 @@ import { AppScrollArea } from "@/components/shared/AppScrollArea";
 import { EditorActionBar } from "@/components/editor/EditorActionBar";
 import { EditorStatusText } from "@/components/editor/EditorStatusText";
 import { StreamingView } from "@/components/shared/StreamingView";
-import type { Project } from "@/types";
-import { Plus, Trash2, ChevronDown, Search, BookOpen, Sparkles, Square } from "lucide-react";
+import { listGenerationLogs } from "@/lib/tauri";
+import type { Project, GenerationLog } from "@/types";
+import { Plus, Trash2, ChevronDown, Search, BookOpen, Sparkles, Square, Upload, FileText, Clock } from "lucide-react";
 import { toast } from "sonner";
 
 const sourceTypes = [
@@ -40,8 +50,16 @@ export function KnowledgeEditor({ project }: { project: Project }) {
   const [importContent, setImportContent] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [showSearch, setShowSearch] = useState(false);
+  const [activeSection, setActiveSection] = useState<"sources" | "search" | "recall">("sources");
+  const [recentLogs, setRecentLogs] = useState<GenerationLog[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { load(); }, [load]);
+
+  // Load recent generation logs as recall records
+  useEffect(() => {
+    listGenerationLogs(project.id, 10).then(setRecentLogs).catch(() => {});
+  }, [project.id, generating]);
 
   const handleImport = useCallback(async () => {
     if (!importTitle.trim() || !importContent.trim()) return;
@@ -51,9 +69,35 @@ export function KnowledgeEditor({ project }: { project: Project }) {
     toast.success("资料已导入");
   }, [importTitle, importType, importContent, importSource]);
 
+  const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      if (!text.trim()) {
+        toast.error("文件内容为空");
+        return;
+      }
+      const fileName = file.name.replace(/\.[^.]+$/, "");
+      const ext = file.name.split(".").pop()?.toLowerCase();
+      if (ext && !["txt", "md", "markdown", "text"].includes(ext)) {
+        toast.warning("仅支持 txt/md 文件");
+        return;
+      }
+      await importSource(fileName, "reference", text);
+      toast.success(`已导入文件：${file.name}`);
+    } catch (err) {
+      toast.error("文件导入失败", { description: String(err) });
+    } finally {
+      // Reset input so the same file can be selected again
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }, [importSource]);
+
   const handleSearch = useCallback(async () => {
     if (!searchQuery.trim()) return;
     setShowSearch(true);
+    setActiveSection("search");
     await search(searchQuery.trim(), 10);
   }, [searchQuery, search]);
 
@@ -95,104 +139,141 @@ export function KnowledgeEditor({ project }: { project: Project }) {
               <Square className="h-4 w-4" />停止
             </Button>
           ) : null}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".txt,.md,.markdown,.text"
+            onChange={handleFileSelect}
+            style={{ display: "none" }}
+          />
+          <Button
+            variant="outline"
+            onClick={() => fileInputRef.current?.click()}
+            className="rounded-full px-4 py-2.5 gap-1.5"
+          >
+            <Upload className="h-4 w-4" />
+            导入文件
+          </Button>
           <Button onClick={() => setShowImport(true)} className="rounded-full px-4 py-2.5 gap-1.5">
             <Plus className="h-4 w-4" />
-            导入资料
+            粘贴资料
           </Button>
         </EditorActionBar>
       }
     >
       <AppScrollArea>
         <div className="w-full min-w-0 max-w-full space-y-4 px-4 py-4 sm:px-6">
-          {/* Search bar */}
-          <div className="flex gap-2">
-            <Input
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-              placeholder="搜索知识库..."
-              className="flex-1"
-            />
-            <Button variant="outline" onClick={handleSearch} className="rounded-full gap-1.5">
-              <Search className="h-4 w-4" />搜索
-            </Button>
-            {showSearch && (
-              <Button variant="ghost" onClick={() => { setShowSearch(false); setSearchQuery(""); }} className="rounded-full">
-                清除
-              </Button>
-            )}
+          {/* Section tabs */}
+          <div className="flex items-center gap-1 border-b border-border">
+            {([
+              { key: "sources", label: `资料列表 (${sources.length})` },
+              { key: "search", label: "搜索" },
+              { key: "recall", label: "召回记录" },
+            ] as const).map(tab => (
+              <button
+                key={tab.key}
+                onClick={() => setActiveSection(tab.key)}
+                className={`px-4 py-2 text-sm font-medium transition-colors ${
+                  activeSection === tab.key
+                    ? "text-primary border-b-2 border-primary"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
           </div>
 
-          {/* Search results */}
-          {showSearch && (
-            <div className="space-y-2">
-              <h3 className="text-sm font-semibold text-foreground">搜索结果（{searchResults.length}）</h3>
-              {searchResults.map((chunk, i) => (
-                <div key={i} className="rounded-2xl border border-border bg-accent p-3 text-sm">
-                  <div className="mb-1 flex items-center gap-2">
-                    <Badge variant="secondary" className="text-xs">{typeLabel[chunk.source_type] || chunk.source_type}</Badge>
-                    <span className="font-medium">{chunk.title}</span>
-                  </div>
-                  <p className="text-xs text-muted-foreground line-clamp-3">{chunk.content}</p>
+          {/* Sources list section */}
+          {activeSection === "sources" && (
+            <>
+              {sources.length === 0 ? (
+                <div className="flex flex-col items-center justify-center gap-3 py-12 text-muted-foreground">
+                  <BookOpen className="h-8 w-8 opacity-50" />
+                  <p className="text-sm">暂无资料</p>
+                  <p className="text-xs">点击「导入文件」选择 txt/md 文件，或「粘贴资料」手动添加</p>
                 </div>
-              ))}
-              {searchResults.length === 0 && (
+              ) : (
+                sources.map(source => (
+                  <SourceCard
+                    key={source.id}
+                    source={source}
+                    onAnalyze={handleAnalyze}
+                    onDelete={() => remove(source.id)}
+                    canAnalyze={!!currentPreset && !generating}
+                  />
+                ))
+              )}
+            </>
+          )}
+
+          {/* Search section */}
+          {activeSection === "search" && (
+            <div className="space-y-3">
+              <div className="flex gap-2">
+                <Input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+                  placeholder="搜索知识库..."
+                  className="flex-1"
+                />
+                <Button variant="outline" onClick={handleSearch} className="rounded-full gap-1.5">
+                  <Search className="h-4 w-4" />搜索
+                </Button>
+              </div>
+              {searchResults.length > 0 ? (
+                <div className="space-y-2">
+                  <h3 className="text-sm font-semibold text-foreground">搜索结果（{searchResults.length}）</h3>
+                  {searchResults.map((chunk, i) => (
+                    <div key={i} className="rounded-lg border border-border bg-accent p-3 text-sm">
+                      <div className="mb-1 flex items-center gap-2">
+                        <Badge variant="secondary" className="text-xs">{typeLabel[chunk.source_type] || chunk.source_type}</Badge>
+                        <span className="font-medium">{chunk.title}</span>
+                      </div>
+                      <p className="text-xs text-muted-foreground line-clamp-3">{chunk.content}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : showSearch ? (
                 <p className="py-4 text-center text-sm text-muted-foreground">未找到匹配的资料</p>
+              ) : (
+                <p className="py-4 text-center text-sm text-muted-foreground">输入关键词搜索知识库</p>
               )}
             </div>
           )}
 
-          {/* Sources list */}
-          {!showSearch && (
-            <>
-              {sources.map(source => (
-                <Collapsible key={source.id}>
-                  <div className="w-full min-w-0 rounded-2xl border border-border bg-card overflow-hidden">
-                    <CollapsibleTrigger className="grid w-full min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-accent/50">
-                      <BookOpen className="h-4 w-4 shrink-0 text-muted-foreground" />
-                      <div className="grid min-w-0 gap-0.5">
-                        <span className="min-w-0 truncate font-medium text-foreground">{source.title}</span>
-                        <span className="text-xs text-muted-foreground">
-                          {typeLabel[source.source_type] || source.source_type} · {source.chunk_count} 个片段
-                        </span>
-                      </div>
-                      <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-                    </CollapsibleTrigger>
-                    <CollapsibleContent>
-                      <div className="border-t border-border/50 px-4 py-3">
-                        <div className="mb-3 max-h-48 overflow-y-auto app-scrollbar text-sm text-muted-foreground whitespace-pre-wrap">
-                          {source.raw_content.slice(0, 1000)}
-                          {source.raw_content.length > 1000 && "..."}
-                        </div>
-                        <div className="flex gap-2">
-                          {currentPreset && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => handleAnalyze(source.raw_content)}
-                              disabled={generating}
-                              className="rounded-full gap-1.5"
-                            >
-                              <Sparkles className="h-3 w-3" />
-                              AI 拆书分析
-                            </Button>
-                          )}
-                          <Button size="sm" variant="destructive" onClick={() => remove(source.id)} className="rounded-full gap-1.5">
-                            <Trash2 className="h-3 w-3" />删除
-                          </Button>
-                        </div>
-                      </div>
-                    </CollapsibleContent>
+          {/* Recall records section */}
+          {activeSection === "recall" && (
+            <div className="space-y-2">
+              <h3 className="text-sm font-semibold text-foreground">最近生成记录</h3>
+              <p className="text-xs text-muted-foreground mb-2">
+                以下记录展示了 AI 生成时可能引用了知识库内容的历史调用
+              </p>
+              {recentLogs.length > 0 ? (
+                recentLogs.map(log => (
+                  <div key={log.id} className="rounded-lg border border-border p-3 space-y-1">
+                    <div className="flex items-center justify-between">
+                      <Badge variant="secondary" className="text-xs">{log.command}</Badge>
+                      <Badge variant={log.status === "success" ? "default" : "destructive"} className="text-xs">
+                        {log.status}
+                      </Badge>
+                    </div>
+                    <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                      <span className="flex items-center gap-1">
+                        <Clock className="h-3 w-3" />
+                        {new Date(log.started_at).toLocaleString("zh-CN")}
+                      </span>
+                      {log.model_name && <span>{log.model_name}</span>}
+                      <span>输入 {log.input_chars} 字 / 输出 {log.output_chars} 字</span>
+                    </div>
+                    {log.error && <p className="text-xs text-destructive">{log.error}</p>}
                   </div>
-                </Collapsible>
-              ))}
-              {sources.length === 0 && (
-                <p className="py-8 text-center text-muted-foreground">
-                  暂无资料，点击「导入资料」开始添加<br/>
-                  支持粘贴文本或导入 txt/md 内容
-                </p>
+                ))
+              ) : (
+                <p className="py-4 text-center text-sm text-muted-foreground">暂无生成记录</p>
               )}
-            </>
+            </div>
           )}
         </div>
       </AppScrollArea>
@@ -242,5 +323,81 @@ export function KnowledgeEditor({ project }: { project: Project }) {
         </DialogContent>
       </Dialog>
     </WorkspacePageLayout>
+  );
+}
+
+// ── Source Card Component ─────────────────────────────────────
+
+function SourceCard({
+  source,
+  onAnalyze,
+  onDelete,
+  canAnalyze,
+}: {
+  source: import("@/types").KnowledgeSource;
+  onAnalyze: (content: string) => void;
+  onDelete: () => void;
+  canAnalyze: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const charCount = source.raw_content.length;
+
+  return (
+    <div className="w-full min-w-0 rounded-lg border border-border bg-card overflow-hidden">
+      {/* Header */}
+      <button
+        className="grid w-full min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-accent/50"
+        onClick={() => setExpanded(!expanded)}
+      >
+        <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <div className="grid min-w-0 gap-0.5">
+          <span className="min-w-0 truncate font-medium text-foreground">{source.title}</span>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Badge variant="outline" className="text-[10px] h-4 px-1.5">
+              {typeLabel[source.source_type] || source.source_type}
+            </Badge>
+            <span>{source.chunk_count} 个片段</span>
+            <span>{charCount.toLocaleString()} 字</span>
+            <span>{new Date(source.created_at).toLocaleDateString("zh-CN")}</span>
+          </div>
+        </div>
+        <ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`} />
+      </button>
+
+      {/* Expanded content */}
+      {expanded && (
+        <div className="border-t border-border/50 px-4 py-3 space-y-3">
+          {/* Content preview */}
+          <div className="max-h-48 overflow-y-auto app-scrollbar text-sm text-muted-foreground whitespace-pre-wrap rounded-md bg-muted/30 p-3">
+            {source.raw_content.slice(0, 2000)}
+            {source.raw_content.length > 2000 && "\n\n... (内容已截断)"}
+          </div>
+
+          {/* Import metadata */}
+          <div className="flex items-center gap-4 text-xs text-muted-foreground">
+            <span>创建时间：{new Date(source.created_at).toLocaleString("zh-CN")}</span>
+            <span>ID: {source.id}</span>
+          </div>
+
+          {/* Actions */}
+          <div className="flex gap-2">
+            {canAnalyze && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onAnalyze(source.raw_content)}
+                className="rounded-full gap-1.5"
+              >
+                <Sparkles className="h-3 w-3" />
+                AI 拆书分析
+              </Button>
+            )}
+            <Button size="sm" variant="destructive" onClick={onDelete} className="rounded-full gap-1.5">
+              <Trash2 className="h-3 w-3" />删除
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
