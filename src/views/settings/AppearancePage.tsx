@@ -5,7 +5,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useTheme } from "@/hooks/useTheme";
-import { useAppearance } from "@/contexts/AppearanceContext";
+import { useAppearance, type Density } from "@/contexts/AppearanceContext";
 import { Sun, Moon } from "lucide-react";
 
 export function AppearancePage() {
@@ -45,7 +45,12 @@ export function AppearancePage() {
       <Card className="rounded-3xl border border-border shadow-sm mb-5">
         <CardHeader><CardTitle className="text-base">界面密度</CardTitle></CardHeader>
         <CardContent>
-          <Select value={density} onValueChange={setDensity}>
+          <Select
+            value={density}
+            onValueChange={(value) => {
+              void setDensity(value as Density);
+            }}
+          >
             <SelectTrigger className="rounded-xl"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="compact">紧凑</SelectItem>
@@ -60,7 +65,12 @@ export function AppearancePage() {
       <Card className="rounded-3xl border border-border shadow-sm">
         <CardHeader><CardTitle className="text-base">编辑器字号</CardTitle></CardHeader>
         <CardContent>
-          <Select value={editorFontSize} onValueChange={setEditorFontSize}>
+          <Select
+            value={editorFontSize}
+            onValueChange={(value) => {
+              void setEditorFontSize(value);
+            }}
+          >
             <SelectTrigger className="rounded-xl"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="14">14px — 小</SelectItem>
