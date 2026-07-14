@@ -41,6 +41,17 @@ pub fn emit_done(app: &AppHandle, session_id: &str) {
     }
 }
 
+/// Emit cancellation separately from errors so the frontend does not show a
+/// failure toast or race the session from cancelled back to failed.
+pub fn emit_cancelled(app: &AppHandle, session_id: &str) {
+    let payload = DonePayload {
+        session_id: session_id.to_string(),
+    };
+    if let Err(e) = app.emit("ai-cancelled", &payload) {
+        eprintln!("Failed to emit ai-cancelled event: {}", e);
+    }
+}
+
 pub fn emit_error(app: &AppHandle, session_id: &str, error: &str) {
     let payload = ErrorPayload {
         session_id: session_id.to_string(),
