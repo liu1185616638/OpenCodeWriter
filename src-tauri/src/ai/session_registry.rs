@@ -5,7 +5,7 @@
 /// `tokio::select!` can wake immediately while waiting for Runtime startup or the
 /// next stream item.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
@@ -51,17 +51,30 @@ impl SessionCancellation {
 
 pub struct AiSessionRegistry {
     sessions: Mutex<HashMap<String, Arc<SessionCancellation>>>,
+    cancelled_batch_jobs: Mutex<HashSet<i64>>,
 }
 
 impl AiSessionRegistry {
     pub fn new() -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
+            cancelled_batch_jobs: Mutex::new(HashSet::new()),
         }
     }
 
     pub fn register(&self, session_id: &str) -> Arc<SessionCancellation> {
         let cancellation = Arc::new(SessionCancellation::new());
+
+        if let Some(job_id) = batch_job_id(session_id) {
+            let cancelled_jobs = self
+                .cancelled_batch_jobs
+                .lock()
+                .expect("batch cancellation registry poisoned");
+            if cancelled_jobs.contains(&job_id) {
+                cancellation.cancel();
+            }
+        }
+
         let mut map = self.sessions.lock().expect("session registry poisoned");
         map.insert(session_id.to_string(), cancellation.clone());
         cancellation
@@ -78,9 +91,14 @@ impl AiSessionRegistry {
         }
     }
 
-    /// Cancel the currently running child session of a batch job. Batch child
-    /// sessions use `batch_<job_id>_...` identifiers.
+    /// Cancel the currently running child session of a batch job and remember
+    /// the terminal request so later child sessions are born cancelled.
     pub fn cancel_batch_job(&self, job_id: i64) -> usize {
+        self.cancelled_batch_jobs
+            .lock()
+            .expect("batch cancellation registry poisoned")
+            .insert(job_id);
+
         let prefix = format!("batch_{}_", job_id);
         let map = self.sessions.lock().expect("session registry poisoned");
         let mut count = 0;
@@ -105,6 +123,11 @@ impl AiSessionRegistry {
         let mut map = self.sessions.lock().expect("session registry poisoned");
         map.remove(session_id);
     }
+}
+
+fn batch_job_id(session_id: &str) -> Option<i64> {
+    let remainder = session_id.strip_prefix("batch_")?;
+    remainder.split('_').next()?.parse().ok()
 }
 
 impl Default for AiSessionRegistry {
@@ -146,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn batch_cancellation_only_targets_matching_job() {
+    fn batch_cancellation_targets_active_and_future_sessions() {
         let registry = AiSessionRegistry::new();
         let first = registry.register("batch_42_10_a");
         let second = registry.register("batch_42_11_b");
@@ -156,5 +179,15 @@ mod tests {
         assert!(first.is_cancelled());
         assert!(second.is_cancelled());
         assert!(!other.is_cancelled());
+
+        let future = registry.register("batch_42_12_d");
+        assert!(future.is_cancelled());
+    }
+
+    #[test]
+    fn parses_batch_job_id_only_for_batch_sessions() {
+        assert_eq!(batch_job_id("batch_123_7_uuid"), Some(123));
+        assert_eq!(batch_job_id("normal-session"), None);
+        assert_eq!(batch_job_id("batch_bad_7_uuid"), None);
     }
 }
