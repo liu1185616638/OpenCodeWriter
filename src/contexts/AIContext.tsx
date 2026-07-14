@@ -86,7 +86,6 @@ export function AiProvider({ children }: { children: ReactNode }) {
   const onCancelRef = useRef<GenerateOptions["onCancel"]>(undefined);
   const streamedContentRef = useRef("");
   const generatingStageRef = useRef<string | undefined>(undefined);
-  const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const updateStreamedContent = useCallback((updater: string | ((prev: string) => string)) => {
@@ -122,13 +121,6 @@ export function AiProvider({ children }: { children: ReactNode }) {
     unlistenFns.current = [];
   }, []);
 
-  const clearFallbackTimer = useCallback(() => {
-    if (fallbackTimerRef.current) {
-      clearTimeout(fallbackTimerRef.current);
-      fallbackTimerRef.current = null;
-    }
-  }, []);
-
   const clearElapsedTimer = useCallback(() => {
     if (elapsedTimerRef.current) {
       clearInterval(elapsedTimerRef.current);
@@ -156,7 +148,6 @@ export function AiProvider({ children }: { children: ReactNode }) {
     const onError = onErrorRef.current;
     const onCancel = onCancelRef.current;
 
-    clearFallbackTimer();
     clearElapsedTimer();
 
     sessionIdRef.current = null;
@@ -195,7 +186,7 @@ export function AiProvider({ children }: { children: ReactNode }) {
     }
 
     return true;
-  }, [addTimelineEvent, cleanup, clearElapsedTimer, clearFallbackTimer]);
+  }, [addTimelineEvent, cleanup, clearElapsedTimer]);
 
   const generate = useCallback(async (
     options: GenerateOptions | string,
@@ -221,7 +212,6 @@ export function AiProvider({ children }: { children: ReactNode }) {
     }
 
     cleanup();
-    clearFallbackTimer();
     clearElapsedTimer();
     terminalSessionIdsRef.current.clear();
 
@@ -270,8 +260,8 @@ export function AiProvider({ children }: { children: ReactNode }) {
       });
 
       const doneUnlisten = await listen<AiDonePayload>("ai-done", (event) => {
-        if (event.payload.session_id === sessionId) {
-          finalizeSession(sessionId, "completed");
+        if (event.payload.session_id === sessionId && sessionIdRef.current === sessionId) {
+          addTimelineEvent("done", "模型输出完成，正在应用结果");
         }
       });
 
@@ -376,11 +366,9 @@ export function AiProvider({ children }: { children: ReactNode }) {
 
       await invoke(command, { sessionId, ...args });
 
-      // Some commands may return successfully even when an event could not be
-      // emitted. The terminal guard makes this fallback safe and idempotent.
-      fallbackTimerRef.current = setTimeout(() => {
-        finalizeSession(sessionId, "completed");
-      }, 200);
+      // The command return is the authoritative success boundary. Backend
+      // post-processing and database application are complete at this point.
+      finalizeSession(sessionId, "completed");
     } catch (cause) {
       const message = String(cause);
       const normalized = message.toLowerCase();
@@ -394,7 +382,6 @@ export function AiProvider({ children }: { children: ReactNode }) {
     addTimelineEvent,
     cleanup,
     clearElapsedTimer,
-    clearFallbackTimer,
     finalizeSession,
     updateStreamedContent,
     updateThinkingContent,
@@ -464,10 +451,9 @@ export function AiProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     return () => {
       cleanup();
-      clearFallbackTimer();
       clearElapsedTimer();
     };
-  }, [cleanup, clearElapsedTimer, clearFallbackTimer]);
+  }, [cleanup, clearElapsedTimer]);
 
   return (
     <AiContext.Provider value={{
