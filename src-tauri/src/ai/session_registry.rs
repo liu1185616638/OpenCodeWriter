@@ -78,6 +78,21 @@ impl AiSessionRegistry {
         }
     }
 
+    /// Cancel the currently running child session of a batch job. Batch child
+    /// sessions use `batch_<job_id>_...` identifiers.
+    pub fn cancel_batch_job(&self, job_id: i64) -> usize {
+        let prefix = format!("batch_{}_", job_id);
+        let map = self.sessions.lock().expect("session registry poisoned");
+        let mut count = 0;
+        for (session_id, cancellation) in map.iter() {
+            if session_id.starts_with(&prefix) {
+                cancellation.cancel();
+                count += 1;
+            }
+        }
+        count
+    }
+
     pub fn is_cancelled(&self, session_id: &str) -> bool {
         let map = self.sessions.lock().expect("session registry poisoned");
         map.get(session_id)
@@ -128,5 +143,18 @@ mod tests {
         timeout(Duration::from_secs(1), cancellation.cancelled())
             .await
             .expect("pre-cancelled session should resolve immediately");
+    }
+
+    #[test]
+    fn batch_cancellation_only_targets_matching_job() {
+        let registry = AiSessionRegistry::new();
+        let first = registry.register("batch_42_10_a");
+        let second = registry.register("batch_42_11_b");
+        let other = registry.register("batch_7_10_c");
+
+        assert_eq!(registry.cancel_batch_job(42), 2);
+        assert!(first.is_cancelled());
+        assert!(second.is_cancelled());
+        assert!(!other.is_cancelled());
     }
 }
