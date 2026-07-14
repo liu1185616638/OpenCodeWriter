@@ -16,25 +16,21 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            // Projects
             commands::projects::create_project,
             commands::projects::list_projects,
             commands::projects::get_project,
             commands::projects::delete_project,
             commands::projects::update_project_stage,
             commands::projects::get_project_progress,
-            // Outlines
             commands::outlines::get_outline,
             commands::outlines::save_outline,
             commands::outlines::complete_outline,
-            // Characters
             commands::characters::list_characters,
             commands::characters::list_characters_by_tier,
             commands::characters::get_character,
             commands::characters::create_character,
             commands::characters::update_character,
             commands::characters::delete_character,
-            // Chapters
             commands::chapters::list_chapters,
             commands::chapters::get_chapter,
             commands::chapters::create_chapter,
@@ -45,13 +41,12 @@ pub fn run() {
             commands::chapters::list_chapter_workspace_summaries,
             commands::chapters::update_chapter_task_sheet,
             commands::chapters::list_chapter_reviews,
-            // Contents
             commands::contents::get_content,
             commands::contents::save_content,
+            commands::contents::apply_content_draft,
             commands::contents::mark_content_stale,
             commands::contents::list_stale_contents,
             commands::contents::get_content_workspace,
-            // Settings
             commands::settings::get_setting,
             commands::settings::set_setting,
             commands::settings::list_model_presets,
@@ -59,16 +54,13 @@ pub fn run() {
             commands::settings::update_model_preset,
             commands::settings::delete_model_preset,
             commands::settings::fetch_models,
-            // Stale
             commands::stale::mark_stale,
             commands::stale::is_stale,
             commands::stale::list_stale_reasons,
             commands::stale::clear_stale,
-            // Style
             commands::style::get_style_config,
             commands::style::save_style_config,
             commands::style::copy_style_config,
-            // AI Generation
             commands::ai::generate_outline,
             commands::ai::generate_characters,
             commands::ai::generate_chapters,
@@ -84,58 +76,45 @@ pub fn run() {
             commands::ai::review_chapter_content,
             commands::ai::repair_chapter_content,
             commands::ai::batch_generate_chapters,
-            // Snapshots
             commands::snapshots::create_snapshot,
             commands::snapshots::list_snapshots,
             commands::snapshots::delete_old_snapshots,
-            // Generation Logs
             commands::generation_logs::list_generation_logs,
-            // Project Profiles
             commands::profiles::get_project_profile,
             commands::profiles::save_project_profile,
-            // World Items
             commands::world::list_world_items,
             commands::world::create_world_item,
             commands::world::update_world_item,
             commands::world::delete_world_item,
-            // Character Relations
             commands::character_assets::list_character_relations,
             commands::character_assets::create_character_relation,
             commands::character_assets::update_character_relation,
             commands::character_assets::delete_character_relation,
-            // Character States
             commands::character_assets::list_character_states,
             commands::character_assets::create_character_state,
             commands::character_assets::delete_character_state,
-            // Story Facts
             commands::story::list_story_facts,
             commands::story::create_story_fact,
             commands::story::update_story_fact,
             commands::story::delete_story_fact,
-            // Foreshadows
             commands::story::list_foreshadows,
             commands::story::create_foreshadow,
             commands::story::update_foreshadow,
             commands::story::delete_foreshadow,
-            // Knowledge Base
             commands::knowledge::list_knowledge_sources,
             commands::knowledge::import_knowledge,
             commands::knowledge::delete_knowledge_source,
             commands::knowledge::search_knowledge,
-            // Style Rules
             commands::style_rules::list_style_rules,
             commands::style_rules::create_style_rule,
             commands::style_rules::update_style_rule,
             commands::style_rules::delete_style_rule,
-            // Model Routes
             commands::model_routes::list_model_routes,
             commands::model_routes::upsert_model_route,
-            // Jobs
             commands::jobs::list_jobs,
             commands::jobs::create_job,
             commands::jobs::update_job_status,
             commands::jobs::delete_job,
-            // Runtime Tools & Skills (Phase 8)
             commands::runtime_tools::list_runtime_tools,
             commands::runtime_tools::list_runtime_skills,
             commands::runtime_tools::execute_runtime_tool,
@@ -144,15 +123,13 @@ pub fn run() {
             commands::runtime_tools::list_mcp_tools,
             commands::runtime_tools::approve_mcp_call,
             commands::runtime_tools::deny_mcp_call,
-                        commands::runtime_tools::list_mcp_call_logs,
-            // Workbench Queries (Phase C)
+            commands::runtime_tools::list_mcp_call_logs,
             commands::workbench_queries::list_project_summaries,
             commands::workbench_queries::test_model_connection,
             commands::workbench_queries::complete_setup,
             commands::workbench_queries::touch_project_opened,
             commands::workbench_queries::preview_profile_change_impact,
-commands::workbench_queries::get_app_data_dir,
-            // Task Center (Phase F)
+            commands::workbench_queries::get_app_data_dir,
             commands::task_center::list_task_center_items,
             commands::task_center::cancel_ai_session,
             commands::task_center::get_retry_info,
