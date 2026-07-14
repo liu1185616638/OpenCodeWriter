@@ -1,9 +1,9 @@
 use crate::ai::events;
 use crate::ai::session_registry::AiSessionRegistry;
-use crate::db::{DbState, get_conn};
+use crate::db::{get_conn, DbState};
 use rusqlite::params;
 use serde::Serialize;
-use tauri::{AppHandle, State, Manager};
+use tauri::{AppHandle, Manager, State};
 
 /// Unified task center item — aggregates jobs, generation_logs, and snapshots
 /// into a single timeline for the task drawer and task center page.
@@ -27,7 +27,10 @@ pub struct TaskCenterItem {
     pub ended_at: Option<String>,
 }
 
-fn row_to_task_center_item(row: &rusqlite::Row<'_>, item_type: &str) -> rusqlite::Result<TaskCenterItem> {
+fn row_to_task_center_item(
+    row: &rusqlite::Row<'_>,
+    item_type: &str,
+) -> rusqlite::Result<TaskCenterItem> {
     Ok(TaskCenterItem {
         id: row.get(0)?,
         item_type: item_type.to_string(),
@@ -50,7 +53,6 @@ fn row_to_task_center_item(row: &rusqlite::Row<'_>, item_type: &str) -> rusqlite
 
 /// List unified task center items for a project.
 /// filter: "all" | "running" | "failed" | "completed"
-/// Returns items ordered by created_at DESC, limited to `limit` (default 50).
 #[tauri::command]
 pub fn list_task_center_items(
     project_id: i64,
@@ -62,7 +64,7 @@ pub fn list_task_center_items(
     let limit_val = limit.unwrap_or(50).clamp(1, 200);
     let filter_val = filter.unwrap_or_else(|| "all".to_string());
 
-    let status_filter = match filter_val.as_str() {
+    let generation_filter = match filter_val.as_str() {
         "running" => " AND status IN ('started', 'running', 'pending')",
         "failed" => " AND status IN ('failed', 'timeout', 'cancelled')",
         "completed" => " AND status IN ('success', 'completed')",
@@ -70,74 +72,78 @@ pub fn list_task_center_items(
     };
 
     let mut items = Vec::new();
-
-    let gen_sql = format!(
+    let generation_sql = format!(
         "SELECT id, project_id, status, task_type, target_type, target_id, model_name, error, session_id, 0, 0, input_chars, output_chars, started_at, ended_at \
          FROM generation_logs \
          WHERE project_id = ?1{} \
          ORDER BY started_at DESC LIMIT ?2",
-        status_filter
+        generation_filter
     );
-    let mut stmt = conn.prepare(&gen_sql).map_err(|e| e.to_string())?;
-    let gen_rows = stmt
-        .query_map(params![project_id, limit_val], |row| row_to_task_center_item(row, "generation"))
-        .map_err(|e| e.to_string())?;
-    for row in gen_rows {
-        items.push(row.map_err(|e| e.to_string())?);
+    let mut generation_stmt = conn
+        .prepare(&generation_sql)
+        .map_err(|error| error.to_string())?;
+    let generation_rows = generation_stmt
+        .query_map(params![project_id, limit_val], |row| {
+            row_to_task_center_item(row, "generation")
+        })
+        .map_err(|error| error.to_string())?;
+    for row in generation_rows {
+        items.push(row.map_err(|error| error.to_string())?);
     }
 
-    let job_status_filter = match filter_val.as_str() {
+    let job_filter = match filter_val.as_str() {
         "running" => " AND status IN ('running', 'pending')",
         "failed" => " AND status IN ('failed', 'cancelled')",
         "completed" => " AND status = 'completed'",
         _ => "",
     };
-
     let job_sql = format!(
-        "SELECT id, project_id, status, job_type, '', NULL, '', error, '', progress_current, progress_total, 0, 0, created_at, updated_at \
+        "SELECT id, project_id, status, job_type, '', NULL, '', error, '', progress_current, progress_total, 0, 0, created_at, \
+                CASE WHEN status IN ('completed', 'failed', 'cancelled') THEN updated_at ELSE NULL END \
          FROM jobs \
          WHERE project_id = ?1{} \
          ORDER BY created_at DESC LIMIT ?2",
-        job_status_filter
+        job_filter
     );
-    let mut stmt2 = conn.prepare(&job_sql).map_err(|e| e.to_string())?;
-    let job_rows = stmt2
-        .query_map(params![project_id, limit_val], |row| row_to_task_center_item(row, "job"))
-        .map_err(|e| e.to_string())?;
+    let mut job_stmt = conn
+        .prepare(&job_sql)
+        .map_err(|error| error.to_string())?;
+    let job_rows = job_stmt
+        .query_map(params![project_id, limit_val], |row| {
+            row_to_task_center_item(row, "job")
+        })
+        .map_err(|error| error.to_string())?;
     for row in job_rows {
-        items.push(row.map_err(|e| e.to_string())?);
+        items.push(row.map_err(|error| error.to_string())?);
     }
 
     // Snapshots are immutable completed timeline items. They are excluded from
     // running and failed filters, but visible in all/completed views.
     if filter_val == "all" || filter_val == "completed" {
-        let mut snapshot_stmt = conn.prepare(
-            "SELECT id, project_id, 'completed', reason, target_type, target_id, '', '', '', 0, 0, 0, length(content), created_at, created_at \
-             FROM content_snapshots \
-             WHERE project_id = ?1 \
-             ORDER BY created_at DESC LIMIT ?2",
-        ).map_err(|e| e.to_string())?;
+        let mut snapshot_stmt = conn
+            .prepare(
+                "SELECT id, project_id, 'completed', reason, target_type, target_id, '', '', '', 0, 0, 0, length(content), created_at, created_at \
+                 FROM content_snapshots \
+                 WHERE project_id = ?1 \
+                 ORDER BY created_at DESC LIMIT ?2",
+            )
+            .map_err(|error| error.to_string())?;
         let snapshot_rows = snapshot_stmt
             .query_map(params![project_id, limit_val], |row| {
                 row_to_task_center_item(row, "snapshot")
             })
-            .map_err(|e| e.to_string())?;
+            .map_err(|error| error.to_string())?;
         for row in snapshot_rows {
-            items.push(row.map_err(|e| e.to_string())?);
+            items.push(row.map_err(|error| error.to_string())?);
         }
     }
 
-    items.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    items.sort_by(|left, right| right.created_at.cmp(&left.created_at));
     items.truncate(limit_val as usize);
-
     Ok(items)
 }
 
 /// Cancel an AI session by session_id.
-/// 1. Signal the cancellation handle so Runtime waits wake immediately
-/// 2. Update the generation_log status to 'cancelled'
-/// 3. Emit a dedicated ai-cancelled terminal event
-/// 4. Return the session_id for confirmation
 #[tauri::command]
 pub async fn cancel_ai_session(
     session_id: String,
@@ -150,18 +156,17 @@ pub async fn cancel_ai_session(
     {
         let conn = get_conn(&state)?;
         conn.execute(
-            "UPDATE generation_logs SET status = 'cancelled', ended_at = datetime('now') WHERE session_id = ?1 AND status = 'started'",
+            "UPDATE generation_logs SET status = 'cancelled', ended_at = datetime('now') \
+             WHERE session_id = ?1 AND status = 'started'",
             params![session_id],
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|error| error.to_string())?;
     }
 
     events::emit_cancelled(&app, &session_id);
-
     Ok(session_id)
 }
 
-/// Retry a generation by session_id.
-/// Returns the original command and arguments so the frontend can re-invoke.
 #[derive(Debug, Serialize)]
 pub struct RetryInfo {
     pub session_id: String,
@@ -173,9 +178,6 @@ pub struct RetryInfo {
     pub model_name: String,
 }
 
-/// Look up a generation log by session_id and return retry info.
-/// The frontend is responsible for re-invoking the original command with
-/// a new session_id, since commands require typed parameters.
 #[tauri::command]
 pub fn get_retry_info(
     session_id: String,
@@ -199,5 +201,5 @@ pub fn get_retry_info(
             })
         },
     )
-    .map_err(|e| format!("找不到 session_id={} 的生成记录: {}", session_id, e))
+    .map_err(|error| format!("找不到 session_id={} 的生成记录: {}", session_id, error))
 }
