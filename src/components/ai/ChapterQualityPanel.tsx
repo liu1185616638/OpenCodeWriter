@@ -1,34 +1,29 @@
 /**
- * ChapterQualityPanel — Phase G 审核修复增强
+ * ChapterQualityPanel — 审核与修复
  *
- * - 审核问题显示 quote 引用文本
- * - 点击问题可定位到正文中的对应位置
- * - 修复结果不直接覆盖，先展示 diff 预览
- * - 支持全部应用、放弃
- * - 正文已变化时提示重新审核
+ * 修复输出只存在于本面板的草稿中，不修改中央正文。用户确认应用时，
+ * 后端在同一事务中检查正文版本、创建快照并保存修复内容。
  */
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { listChapterReviews } from "@/lib/tauri";
+import { applyContentDraft, listChapterReviews } from "@/lib/tauri";
 import { useAI } from "@/contexts/AIContext";
 import { useSettings } from "@/hooks/useSettings";
 import { stripThinking } from "@/components/shared/StreamingView";
-import { saveContent } from "@/lib/tauri";
 import type { ChapterReview, ReviewIssue } from "@/types";
-import { ClipboardCheck, Wrench, Check, X, AlertTriangle, Search } from "lucide-react";
+import { ClipboardCheck, Wrench, Check, X, Search } from "lucide-react";
 import { toast } from "sonner";
 
 interface ChapterQualityPanelProps {
   projectId: number;
   chapterId: number | null;
   hasContent: boolean;
-  /** Current content text for quote matching and version check */
   currentContent?: string;
+  currentContentUpdatedAt?: string | null;
   onContentRepaired?: (content: string) => void;
-  /** Called when user clicks an issue, to scroll the editor to the quote position */
   onLocateIssue?: (start: number, end: number) => void;
 }
 
@@ -64,33 +59,41 @@ function issueTypeLabel(type: string): string {
   }
 }
 
-/** Compute a simple line-level diff between two texts */
 function computeDiff(original: string, repaired: string): Array<{ type: "same" | "added" | "removed"; text: string }> {
-  const origLines = original.split("\n");
-  const newLines = repaired.split("\n");
+  const originalLines = original.split("\n");
+  const repairedLines = repaired.split("\n");
   const result: Array<{ type: "same" | "added" | "removed"; text: string }> = [];
-  const maxLen = Math.max(origLines.length, newLines.length);
-  for (let i = 0; i < maxLen; i++) {
-    const orig = origLines[i];
-    const neu = newLines[i];
-    if (orig === neu) {
-      if (orig !== undefined) result.push({ type: "same", text: orig });
+  const maxLength = Math.max(originalLines.length, repairedLines.length);
+
+  for (let index = 0; index < maxLength; index += 1) {
+    const originalLine = originalLines[index];
+    const repairedLine = repairedLines[index];
+    if (originalLine === repairedLine) {
+      if (originalLine !== undefined) result.push({ type: "same", text: originalLine });
     } else {
-      if (orig !== undefined) result.push({ type: "removed", text: orig });
-      if (neu !== undefined) result.push({ type: "added", text: neu });
+      if (originalLine !== undefined) result.push({ type: "removed", text: originalLine });
+      if (repairedLine !== undefined) result.push({ type: "added", text: repairedLine });
     }
   }
   return result;
 }
 
-export function ChapterQualityPanel({ projectId, chapterId, hasContent, currentContent = "", onContentRepaired, onLocateIssue }: ChapterQualityPanelProps) {
+export function ChapterQualityPanel({
+  projectId,
+  chapterId,
+  hasContent,
+  currentContent = "",
+  currentContentUpdatedAt = null,
+  onContentRepaired,
+  onLocateIssue,
+}: ChapterQualityPanelProps) {
   const [reviews, setReviews] = useState<ChapterReview[]>([]);
   const [repairDraft, setRepairDraft] = useState<string | null>(null);
-  const [repairOriginal, setRepairOriginal] = useState<string>("");
-  const { generating, generatingStage, generate, cancel, lastCompletedStage, generationStatus } = useAI();
+  const [repairOriginal, setRepairOriginal] = useState("");
+  const [repairBaseUpdatedAt, setRepairBaseUpdatedAt] = useState<string | null>(null);
+  const [applyingRepair, setApplyingRepair] = useState(false);
+  const { generating, generatingStage, generate, cancel } = useAI();
   const { currentPreset } = useSettings();
-  const contentRef = useRef(currentContent);
-  contentRef.current = currentContent;
 
   const loadReviews = useCallback(async () => {
     if (!chapterId) {
@@ -98,102 +101,99 @@ export function ChapterQualityPanel({ projectId, chapterId, hasContent, currentC
       return;
     }
     try {
-      const list = await listChapterReviews(projectId, chapterId, 3);
-      setReviews(list);
-    } catch (e) {
-      console.error("Failed to load reviews:", e);
+      setReviews(await listChapterReviews(projectId, chapterId, 3));
+    } catch (error) {
+      console.error("Failed to load reviews:", error);
     }
   }, [projectId, chapterId]);
 
   useEffect(() => {
-    loadReviews();
+    void loadReviews();
+    setRepairDraft(null);
   }, [loadReviews]);
-
-  // Reload reviews when review generation completes
-  useEffect(() => {
-    if (!generating && lastCompletedStage === "review" && generationStatus === "completed") {
-      loadReviews();
-    }
-  }, [generating, lastCompletedStage, generationStatus, loadReviews]);
 
   const handleReview = useCallback(async () => {
     if (!currentPreset || !chapterId) return;
     await generate({
       command: "review_chapter_content",
       stage: "review",
-      args: {
-        projectId,
-        chapterId,
-        presetId: currentPreset.id,
-      },
+      args: { projectId, chapterId, presetId: currentPreset.id },
       onComplete: () => {
         toast.success("审核完成");
-        loadReviews();
+        void loadReviews();
       },
-      onError: (err) => {
-        toast.error("审核失败", { description: err });
-      },
+      onError: (error) => toast.error("审核失败", { description: error }),
+      onCancel: () => toast.info("已取消审核"),
     });
   }, [currentPreset, chapterId, projectId, generate, loadReviews]);
 
   const handleRepair = useCallback(async () => {
     if (!currentPreset || !chapterId) return;
+    const original = currentContent;
+    const baseUpdatedAt = currentContentUpdatedAt;
     setRepairDraft(null);
+    setRepairOriginal(original);
+    setRepairBaseUpdatedAt(baseUpdatedAt);
+
     await generate({
       command: "repair_chapter_content",
       stage: "repair",
-      args: {
-        projectId,
-        chapterId,
-        presetId: currentPreset.id,
-      },
-      onComplete: (content) => {
-        const cleaned = stripThinking(content);
+      args: { projectId, chapterId, presetId: currentPreset.id },
+      onComplete: (generated) => {
+        const cleaned = stripThinking(generated);
         if (cleaned.trim()) {
-          setRepairOriginal(contentRef.current);
           setRepairDraft(cleaned);
+          toast.success("修复草稿已生成", { description: "请检查差异后再应用" });
+        } else {
+          toast.error("模型没有返回可应用的修复内容");
         }
       },
-      onError: (err) => {
-        toast.error("修复失败", { description: err });
-      },
+      onError: (error) => toast.error("修复失败", { description: error }),
+      onCancel: () => toast.info("已取消修复，正文未发生变化"),
     });
-  }, [currentPreset, chapterId, projectId, generate]);
+  }, [currentPreset, chapterId, projectId, generate, currentContent, currentContentUpdatedAt]);
 
   const handleApplyRepair = useCallback(async () => {
     if (!repairDraft || !chapterId) return;
+    setApplyingRepair(true);
     try {
-      await saveContent(projectId, chapterId, repairDraft);
+      const applied = await applyContentDraft({
+        projectId,
+        chapterId,
+        content: repairDraft,
+        expectedUpdatedAt: repairBaseUpdatedAt,
+        reason: "AI 修复应用前快照",
+      });
       toast.success("修复内容已应用并保存");
-      onContentRepaired?.(repairDraft);
+      onContentRepaired?.(applied.content);
       setRepairDraft(null);
-      loadReviews();
-    } catch (e) {
-      toast.error("应用修复失败", { description: String(e) });
+      void loadReviews();
+    } catch (error) {
+      toast.error("应用修复失败", { description: String(error) });
+    } finally {
+      setApplyingRepair(false);
     }
-  }, [repairDraft, chapterId, projectId, onContentRepaired, loadReviews]);
+  }, [repairDraft, chapterId, projectId, repairBaseUpdatedAt, onContentRepaired, loadReviews]);
 
   const handleDiscardRepair = useCallback(() => {
     setRepairDraft(null);
-    toast.info("已放弃修复结果");
+    toast.info("已放弃修复结果，正文未发生变化");
   }, []);
 
   const handleLocateIssue = useCallback((issue: ReviewIssue) => {
     if (!issue.quote && issue.start === undefined) return;
-    // Try to find the quote in the current content
     let start = issue.start;
     let end = issue.end;
     if ((start === undefined || end === undefined) && issue.quote && currentContent) {
-      const idx = currentContent.indexOf(issue.quote);
-      if (idx >= 0) {
-        start = idx;
-        end = idx + issue.quote.length;
+      const index = currentContent.indexOf(issue.quote);
+      if (index >= 0) {
+        start = index;
+        end = index + issue.quote.length;
       }
     }
     if (start !== undefined && end !== undefined && onLocateIssue) {
       onLocateIssue(start, end);
     } else if (issue.quote) {
-      // Quote not found in current content - content may have changed
       toast.warning("无法在当前正文中定位该问题，正文可能已被修改", {
         description: "建议重新审核以获取最新的问题定位",
       });
@@ -203,9 +203,8 @@ export function ChapterQualityPanel({ projectId, chapterId, hasContent, currentC
   const latestReview = reviews[0];
   const isReviewing = generating && generatingStage === "review";
   const isRepairing = generating && generatingStage === "repair";
-  const isBusy = generating && (isReviewing || isRepairing);
+  const isBusy = isReviewing || isRepairing;
 
-  // Parse issues from latest review
   let issues: ReviewIssue[] = [];
   if (latestReview) {
     try {
@@ -215,32 +214,24 @@ export function ChapterQualityPanel({ projectId, chapterId, hasContent, currentC
     }
   }
 
-  // Check if content has changed since the latest review
-  const contentChangedSinceReview = latestReview && currentContent && hasContent;
-
   if (!chapterId) {
-    return (
-      <div className="p-4 text-sm text-muted-foreground text-center">
-        选择章节后查看质量审核
-      </div>
-    );
+    return <div className="p-4 text-sm text-muted-foreground text-center">选择章节后查看质量审核</div>;
   }
 
-  // Show repair diff preview
   if (repairDraft !== null) {
     const diffLines = computeDiff(repairOriginal, repairDraft);
-    const addedCount = diffLines.filter(l => l.type === "added").length;
-    const removedCount = diffLines.filter(l => l.type === "removed").length;
+    const addedCount = diffLines.filter((line) => line.type === "added").length;
+    const removedCount = diffLines.filter((line) => line.type === "removed").length;
 
     return (
       <div className="flex h-full flex-col">
         <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-border">
           <h3 className="text-sm font-semibold">修复预览</h3>
           <div className="flex gap-1.5">
-            <Button size="sm" onClick={handleApplyRepair} className="rounded-full h-7 px-3 gap-1">
-              <Check className="h-3 w-3" />应用修复
+            <Button size="sm" onClick={() => void handleApplyRepair()} disabled={applyingRepair} className="rounded-md h-7 px-3 gap-1">
+              <Check className="h-3 w-3" />{applyingRepair ? "应用中" : "应用修复"}
             </Button>
-            <Button size="sm" variant="outline" onClick={handleDiscardRepair} className="rounded-full h-7 px-3 gap-1">
+            <Button size="sm" variant="outline" onClick={handleDiscardRepair} disabled={applyingRepair} className="rounded-md h-7 px-3 gap-1">
               <X className="h-3 w-3" />放弃
             </Button>
           </div>
@@ -253,15 +244,15 @@ export function ChapterQualityPanel({ projectId, chapterId, hasContent, currentC
             </div>
             <div className="rounded-lg border border-border overflow-hidden">
               <pre className="text-xs font-mono whitespace-pre-wrap break-all">
-                {diffLines.map((line, i) => (
+                {diffLines.map((line, index) => (
                   <div
-                    key={i}
+                    key={`${line.type}-${index}`}
                     className={`px-3 py-0.5 ${
                       line.type === "added"
                         ? "bg-green-500/10 text-green-700 dark:text-green-400"
                         : line.type === "removed"
-                        ? "bg-red-500/10 text-red-700 dark:text-red-400 line-through"
-                        : ""
+                          ? "bg-red-500/10 text-red-700 dark:text-red-400 line-through"
+                          : ""
                     }`}
                   >
                     <span className="select-none mr-2 opacity-50">
@@ -280,22 +271,19 @@ export function ChapterQualityPanel({ projectId, chapterId, hasContent, currentC
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header with action buttons */}
       <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-border">
         <h3 className="text-sm font-semibold">质量审核</h3>
         <div className="flex gap-1.5">
           {isBusy ? (
-            <Button size="sm" variant="destructive" onClick={cancel} className="rounded-full h-7 px-3">
-              停止
-            </Button>
+            <Button size="sm" variant="destructive" onClick={() => void cancel()} className="rounded-md h-7 px-3">停止</Button>
           ) : (
             <>
               <Button
                 size="sm"
                 variant="outline"
-                onClick={handleReview}
+                onClick={() => void handleReview()}
                 disabled={!currentPreset || !hasContent}
-                className="rounded-full h-7 px-3 gap-1"
+                className="rounded-md h-7 px-3 gap-1"
               >
                 <ClipboardCheck className="h-3 w-3" />
                 {latestReview ? "重新审核" : "AI 审核"}
@@ -303,12 +291,11 @@ export function ChapterQualityPanel({ projectId, chapterId, hasContent, currentC
               <Button
                 size="sm"
                 variant="outline"
-                onClick={handleRepair}
+                onClick={() => void handleRepair()}
                 disabled={!currentPreset || !hasContent || !latestReview}
-                className="rounded-full h-7 px-3 gap-1"
+                className="rounded-md h-7 px-3 gap-1"
               >
-                <Wrench className="h-3 w-3" />
-                一键修复
+                <Wrench className="h-3 w-3" />一键修复
               </Button>
             </>
           )}
@@ -317,41 +304,17 @@ export function ChapterQualityPanel({ projectId, chapterId, hasContent, currentC
 
       <ScrollArea className="flex-1">
         <div className="px-4 py-3 space-y-3">
-          {/* Streaming indicator */}
-          {isReviewing && (
-            <div className="text-sm text-muted-foreground animate-pulse">
-              正在审核中...
-            </div>
-          )}
-          {isRepairing && (
-            <div className="text-sm text-muted-foreground animate-pulse">
-              正在修复中，完成后将显示差异预览...
-            </div>
-          )}
+          {isReviewing && <div className="text-sm text-muted-foreground animate-pulse">正在审核中...</div>}
+          {isRepairing && <div className="text-sm text-muted-foreground animate-pulse">正在修复中，正文保持不变...</div>}
 
-          {/* No review yet */}
           {!latestReview && !isReviewing && (
             <div className="text-sm text-muted-foreground text-center py-6">
-              {hasContent
-                ? "点击「AI 审核」评估本章质量"
-                : "请先生成正文，再进行审核"}
+              {hasContent ? "点击「AI 审核」评估本章质量" : "请先生成正文，再进行审核"}
             </div>
           )}
 
-          {/* Latest review */}
           {latestReview && (
             <>
-              {/* Content changed warning */}
-              {contentChangedSinceReview && (
-                <div className="flex items-start gap-2 rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-3 py-2">
-                  <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-yellow-600 mt-0.5" />
-                  <p className="text-xs text-yellow-700 dark:text-yellow-500">
-                    正文在审核后已有修改，问题定位可能不准确。建议重新审核。
-                  </p>
-                </div>
-              )}
-
-              {/* Score cards */}
               <div className="grid grid-cols-2 gap-2">
                 <ScoreCard label="总评" score={latestReview.overall_score} scoreColor={scoreColor} scoreBg={scoreBg} />
                 <ScoreCard label="连续性" score={latestReview.continuity_score} scoreColor={scoreColor} scoreBg={scoreBg} />
@@ -359,49 +322,37 @@ export function ChapterQualityPanel({ projectId, chapterId, hasContent, currentC
                 <ScoreCard label="节奏" score={latestReview.pacing_score} scoreColor={scoreColor} scoreBg={scoreBg} />
               </div>
 
-              {/* Issues list */}
               {issues.length > 0 && (
                 <div className="space-y-2">
                   <h4 className="text-xs font-semibold text-muted-foreground">发现问题（{issues.length}）</h4>
-                  {issues.map((issue, idx) => (
-                    <IssueCard
-                      key={idx}
-                      issue={issue}
-                      onLocate={() => handleLocateIssue(issue)}
-                    />
+                  {issues.map((issue, index) => (
+                    <IssueCard key={`${issue.type}-${index}`} issue={issue} onLocate={() => handleLocateIssue(issue)} />
                   ))}
                 </div>
               )}
 
-              {/* Suggestions */}
               {latestReview.suggestions && (
                 <div className="space-y-1">
                   <h4 className="text-xs font-semibold text-muted-foreground">修复建议</h4>
-                  <p className="text-xs text-foreground rounded-xl bg-muted/50 p-2.5">
-                    {latestReview.suggestions}
-                  </p>
+                  <p className="text-xs text-foreground rounded-lg bg-muted/50 p-2.5">{latestReview.suggestions}</p>
                 </div>
               )}
 
-              {/* Timestamp */}
               <p className="text-[10px] text-muted-foreground text-right">
                 审核时间：{new Date(latestReview.created_at).toLocaleString("zh-CN")}
               </p>
             </>
           )}
 
-          {/* History */}
           {reviews.length > 1 && (
             <details className="pt-2 border-t border-border">
               <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground">
                 历史审核记录（{reviews.length - 1}）
               </summary>
               <div className="mt-2 space-y-1.5">
-                {reviews.slice(1).map((review, idx) => (
-                  <div key={idx} className="text-xs text-muted-foreground flex items-center gap-2">
-                    <span className={`font-medium ${scoreColor(review.overall_score)}`}>
-                      {review.overall_score}分
-                    </span>
+                {reviews.slice(1).map((review, index) => (
+                  <div key={`${review.id}-${index}`} className="text-xs text-muted-foreground flex items-center gap-2">
+                    <span className={`font-medium ${scoreColor(review.overall_score)}`}>{review.overall_score}分</span>
                     <span>{new Date(review.created_at).toLocaleString("zh-CN")}</span>
                   </div>
                 ))}
@@ -416,22 +367,15 @@ export function ChapterQualityPanel({ projectId, chapterId, hasContent, currentC
 
 function IssueCard({ issue, onLocate }: { issue: ReviewIssue; onLocate: () => void }) {
   return (
-    <div className="rounded-xl border border-border p-2.5 space-y-1.5">
+    <div className="rounded-lg border border-border p-2.5 space-y-1.5">
       <div className="flex items-center gap-1.5">
         <Badge variant={severityVariant(issue.severity)} className="text-[10px] h-4 px-1.5">
           {issue.severity === "high" ? "严重" : issue.severity === "medium" ? "中等" : "轻微"}
         </Badge>
-        <Badge variant="secondary" className="text-[10px] h-4 px-1.5">
-          {issueTypeLabel(issue.type)}
-        </Badge>
+        <Badge variant="secondary" className="text-[10px] h-4 px-1.5">{issueTypeLabel(issue.type)}</Badge>
         {issue.quote && (
-          <button
-            onClick={onLocate}
-            className="ml-auto flex items-center gap-0.5 text-[10px] text-primary hover:underline"
-            title="定位到正文"
-          >
-            <Search className="h-3 w-3" />
-            定位
+          <button onClick={onLocate} className="ml-auto flex items-center gap-0.5 text-[10px] text-primary hover:underline" title="定位到正文">
+            <Search className="h-3 w-3" />定位
           </button>
         )}
       </div>
@@ -439,7 +383,7 @@ function IssueCard({ issue, onLocate }: { issue: ReviewIssue; onLocate: () => vo
       {issue.quote && (
         <div className="rounded-md bg-muted/60 px-2 py-1.5">
           <p className="text-[11px] text-muted-foreground italic">
-            「{issue.quote.length > 80 ? issue.quote.slice(0, 80) + "..." : issue.quote}」
+            「{issue.quote.length > 80 ? `${issue.quote.slice(0, 80)}...` : issue.quote}」
           </p>
         </div>
       )}
@@ -453,23 +397,20 @@ function IssueCard({ issue, onLocate }: { issue: ReviewIssue; onLocate: () => vo
 function ScoreCard({
   label,
   score,
-  scoreColor,
-  scoreBg,
+  scoreColor: getScoreColor,
+  scoreBg: getScoreBg,
 }: {
   label: string;
   score: number;
-  scoreColor: (s: number) => string;
-  scoreBg: (s: number) => string;
+  scoreColor: (score: number) => string;
+  scoreBg: (score: number) => string;
 }) {
   return (
-    <div className="rounded-xl border border-border p-2.5">
+    <div className="rounded-lg border border-border p-2.5">
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={`text-2xl font-bold ${scoreColor(score)}`}>{score}</div>
+      <div className={`text-2xl font-bold ${getScoreColor(score)}`}>{score}</div>
       <div className="mt-1 h-1 rounded-full bg-muted overflow-hidden">
-        <div
-          className={`h-full ${scoreBg(score)} transition-all`}
-          style={{ width: `${Math.min(100, score)}%` }}
-        />
+        <div className={`h-full ${getScoreBg(score)} transition-all`} style={{ width: `${Math.min(100, score)}%` }} />
       </div>
     </div>
   );
