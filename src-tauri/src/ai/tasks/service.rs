@@ -1,19 +1,16 @@
 use crate::ai::events;
 use crate::ai::runtime::types::{AiDeltaType, AiRequest, AiRuntime};
-use crate::ai::session_registry::AiSessionRegistry;
+use crate::ai::session_registry::{AiSessionRegistry, SessionCancellation};
 use crate::db::{get_conn, DbState};
 use futures::StreamExt;
 use rusqlite::params;
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 use tokio::time::{timeout, Duration};
 
-/// Maximum time to wait for the entire generation to complete.
-/// The SDK adapter is non-streaming (it collects the full response before
-/// emitting), so this covers the full model inference time.
+/// Maximum period without a Runtime result or stream item.
 const GENERATION_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Context for writing a generation_logs entry
 pub struct GenerationLogContext {
     pub project_id: Option<i64>,
     pub target_type: String,
@@ -25,31 +22,52 @@ pub struct GenerationLogContext {
     pub task_type: String,
 }
 
-/// Insert a "started" generation log entry, returns the log id (0 on failure or when project_id is None)
 pub fn insert_generation_log(app: &AppHandle, ctx: &GenerationLogContext) -> i64 {
     let project_id = match ctx.project_id {
         Some(id) => id,
-        None => return 0, // Skip logging for non-project operations (e.g. idea generation)
+        None => return 0,
     };
     let state = app.state::<DbState>();
     let conn = match get_conn(&state) {
-        Ok(c) => c,
+        Ok(connection) => connection,
         Err(_) => return 0,
     };
-    let res = conn.execute(
+    let result = conn.execute(
         "INSERT INTO generation_logs (project_id, target_type, target_id, command, model_name, status, error, input_chars, output_chars, started_at, session_id, task_type) \
          VALUES (?1, ?2, ?3, ?4, ?5, 'started', '', ?6, 0, datetime('now'), ?7, ?8)",
-        params![project_id, ctx.target_type, ctx.target_id, ctx.command, ctx.model_name, ctx.input_chars as i64, ctx.session_id, ctx.task_type],
+        params![
+            project_id,
+            ctx.target_type,
+            ctx.target_id,
+            ctx.command,
+            ctx.model_name,
+            ctx.input_chars as i64,
+            ctx.session_id,
+            ctx.task_type
+        ],
     );
-    if res.is_ok() { conn.last_insert_rowid() } else { 0 }
+    if result.is_ok() {
+        conn.last_insert_rowid()
+    } else {
+        0
+    }
 }
 
-/// Update a generation log entry with final status (best-effort, errors ignored)
-pub fn finish_generation_log(app: &AppHandle, log_id: i64, status: &str, error: &str, output_chars: usize) {
-    if log_id <= 0 { return; }
+/// Terminal updates are conditional so cancelled rows can never be overwritten
+/// by a late success or failure.
+pub fn finish_generation_log(
+    app: &AppHandle,
+    log_id: i64,
+    status: &str,
+    error: &str,
+    output_chars: usize,
+) {
+    if log_id <= 0 {
+        return;
+    }
     let state = app.state::<DbState>();
     let conn = match get_conn(&state) {
-        Ok(c) => c,
+        Ok(connection) => connection,
         Err(_) => return,
     };
     let _ = conn.execute(
@@ -58,32 +76,27 @@ pub fn finish_generation_log(app: &AppHandle, log_id: i64, status: &str, error: 
     );
 }
 
-/// Tag pairs to detect in content deltas.
 const THINKING_TAG_PAIRS: &[(&str, &str)] = &[
     ("<thinking>", "</thinking>"),
     ("<think>", "</think>"),
 ];
 
-/// Split a content delta into (text, chunk_type) pairs by detecting
-/// `<thinking>`/`<think>` tags. Maintains `inside_thinking` state across
-/// calls to handle tags that span delta boundaries.
-///
-/// Returns a vec of (text, "thinking"|"content") pairs. Empty strings are
-/// not emitted.
-pub fn split_thinking_tags(delta: &str, inside_thinking: &mut bool) -> Vec<(String, String)> {
+pub fn split_thinking_tags(
+    delta: &str,
+    inside_thinking: &mut bool,
+) -> Vec<(String, String)> {
     let mut results = Vec::new();
-    let mut pos = 0;
-    let len = delta.len();
+    let mut position = 0;
+    let length = delta.len();
 
     if *inside_thinking {
-        // Look for any closing tag
-        let mut found_close: Option<(usize, usize, &str)> = None; // (close_start, close_end, close_tag)
+        let mut found_close: Option<(usize, usize)> = None;
         for (_, close_tag) in THINKING_TAG_PAIRS {
-            if let Some(idx) = delta.find(close_tag) {
+            if let Some(index) = delta.find(close_tag) {
                 match found_close {
-                    None => found_close = Some((idx, idx + close_tag.len(), *close_tag)),
-                    Some((prev_idx, _, _)) if idx < prev_idx => {
-                        found_close = Some((idx, idx + close_tag.len(), *close_tag))
+                    None => found_close = Some((index, index + close_tag.len())),
+                    Some((previous, _)) if index < previous => {
+                        found_close = Some((index, index + close_tag.len()))
                     }
                     _ => {}
                 }
@@ -91,16 +104,17 @@ pub fn split_thinking_tags(delta: &str, inside_thinking: &mut bool) -> Vec<(Stri
         }
 
         match found_close {
-            Some((close_start, close_end, _)) => {
-                // Everything before close is thinking
+            Some((close_start, close_end)) => {
                 if close_start > 0 {
-                    results.push((delta[..close_start].to_string(), "thinking".to_string()));
+                    results.push((
+                        delta[..close_start].to_string(),
+                        "thinking".to_string(),
+                    ));
                 }
-                pos = close_end;
+                position = close_end;
                 *inside_thinking = false;
             }
             None => {
-                // Still inside thinking — entire delta is thinking
                 if !delta.is_empty() {
                     results.push((delta.to_string(), "thinking".to_string()));
                 }
@@ -109,20 +123,17 @@ pub fn split_thinking_tags(delta: &str, inside_thinking: &mut bool) -> Vec<(Stri
         }
     }
 
-    // Outside thinking — scan for opening tags
-    while pos < len {
-        let remaining = &delta[pos..];
+    while position < length {
+        let remaining = &delta[position..];
+        let mut found_open: Option<(usize, usize, &str)> = None;
 
-        // Find the earliest opening tag
-        let mut found_open: Option<(usize, usize, usize, &str, &str)> = None;
-        // (open_idx_in_remaining, open_end, open_tag_len, open_tag, close_tag)
         for (open_tag, close_tag) in THINKING_TAG_PAIRS {
-            if let Some(idx) = remaining.find(open_tag) {
-                let open_end = idx + open_tag.len();
+            if let Some(index) = remaining.find(open_tag) {
+                let open_end = index + open_tag.len();
                 match found_open {
-                    None => found_open = Some((idx, open_end, open_tag.len(), *open_tag, *close_tag)),
-                    Some((prev_idx, _, _, _, _)) if idx < prev_idx => {
-                        found_open = Some((idx, open_end, open_tag.len(), *open_tag, *close_tag))
+                    None => found_open = Some((index, open_end, *close_tag)),
+                    Some((previous, _, _)) if index < previous => {
+                        found_open = Some((index, open_end, *close_tag))
                     }
                     _ => {}
                 }
@@ -130,40 +141,32 @@ pub fn split_thinking_tags(delta: &str, inside_thinking: &mut bool) -> Vec<(Stri
         }
 
         match found_open {
-            Some((open_idx, open_end, _, _, close_tag)) => {
-                // Content before the opening tag
-                if open_idx > 0 {
-                    let content = remaining[..open_idx].to_string();
-                    if !content.is_empty() {
-                        results.push((content, "content".to_string()));
-                    }
+            Some((open_index, open_end, close_tag)) => {
+                if open_index > 0 {
+                    results.push((
+                        remaining[..open_index].to_string(),
+                        "content".to_string(),
+                    ));
                 }
 
-                // Check if closing tag is in the same remaining text
                 let after_open = &remaining[open_end..];
-                if let Some(close_idx) = after_open.find(close_tag) {
-                    // Complete thinking block within this delta
-                    let thinking = after_open[..close_idx].to_string();
+                if let Some(close_index) = after_open.find(close_tag) {
+                    let thinking = &after_open[..close_index];
                     if !thinking.is_empty() {
-                        results.push((thinking, "thinking".to_string()));
+                        results.push((thinking.to_string(), "thinking".to_string()));
                     }
-                    pos += open_end + close_idx + close_tag.len();
-                    // inside_thinking stays false — continue scanning
+                    position += open_end + close_index + close_tag.len();
                 } else {
-                    // Thinking continues into next delta
-                    let thinking = after_open.to_string();
-                    if !thinking.is_empty() {
-                        results.push((thinking, "thinking".to_string()));
+                    if !after_open.is_empty() {
+                        results.push((after_open.to_string(), "thinking".to_string()));
                     }
                     *inside_thinking = true;
                     break;
                 }
             }
             None => {
-                // No more opening tags — rest is content
-                let content = remaining.to_string();
-                if !content.is_empty() {
-                    results.push((content, "content".to_string()));
+                if !remaining.is_empty() {
+                    results.push((remaining.to_string(), "content".to_string()));
                 }
                 break;
             }
@@ -173,43 +176,29 @@ pub fn split_thinking_tags(delta: &str, inside_thinking: &mut bool) -> Vec<(Stri
     results
 }
 
-/// Strip <thinking>...</thinking> tags from content before JSON parsing.
-/// Uses manual scan instead of regex crate to avoid adding a dependency.
 pub fn strip_thinking_tags(content: &str) -> String {
     let mut result = String::new();
-    let mut pos = 0;
+    let mut position = 0;
     let open = "<thinking>";
     let close = "</thinking>";
 
-    while let Some(start) = content[pos..].find(open) {
-        // Content before the opening tag
-        result.push_str(&content[pos..pos + start]);
-        let after_open = pos + start + open.len();
+    while let Some(start) = content[position..].find(open) {
+        result.push_str(&content[position..position + start]);
+        let after_open = position + start + open.len();
         if let Some(end) = content[after_open..].find(close) {
-            // Skip the thinking block entirely
-            pos = after_open + end + close.len();
+            position = after_open + end + close.len();
         } else {
-            // Unclosed thinking tag — skip rest
             break;
         }
     }
-    // Remaining content after all thinking blocks
-    result.push_str(&content[pos..]);
+
+    result.push_str(&content[position..]);
     result.trim().to_string()
 }
 
-/// AiTaskService handles AI request execution through the Runtime abstraction.
-///
-/// In Phase 6, only `generate_outline` uses this service. Other commands
-/// continue to use the legacy `stream_and_emit` path until Phase 7.
 pub struct AiTaskService;
 
 impl AiTaskService {
-    /// Execute an AI request through the runtime, streaming chunks to the frontend.
-    ///
-    /// This replaces `stream_and_emit` for migrated commands. The runtime
-    /// produces `AiDelta` events which are mapped to Tauri `ai-chunk` /
-    /// `ai-done` / `ai-error` events, preserving frontend compatibility.
     pub async fn execute(
         app: &AppHandle,
         runtime: &dyn AiRuntime,
@@ -239,148 +228,207 @@ impl AiTaskService {
         emit_done: bool,
     ) -> Result<String, String> {
         let log_id = insert_generation_log(app, log_ctx);
-
-        // Register session for cancellation support
         let registry = app.state::<AiSessionRegistry>();
-        let cancel_flag = registry.register(session_id);
+        let cancellation = registry.register(session_id);
 
-        let mut stream = runtime.run(request).await?;
+        let stream_result = tokio::select! {
+            _ = cancellation.cancelled() => {
+                return finish_cancelled(
+                    app,
+                    &registry,
+                    &cancellation,
+                    session_id,
+                    log_id,
+                    0,
+                );
+            }
+            result = timeout(GENERATION_TIMEOUT, runtime.run(request)) => result,
+        };
+
+        let mut stream = match stream_result {
+            Ok(Ok(stream)) => stream,
+            Ok(Err(error)) => {
+                finish_generation_log(app, log_id, "failed", &error, 0);
+                events::emit_error(app, session_id, &error);
+                registry.unregister(session_id);
+                return Err(error);
+            }
+            Err(_) => {
+                let message = "生成启动超时（超过 5 分钟无响应），请检查模型配置或网络连接";
+                finish_generation_log(app, log_id, "timeout", message, 0);
+                events::emit_error(app, session_id, message);
+                registry.unregister(session_id);
+                return Err(message.to_string());
+            }
+        };
 
         let mut full_content = String::new();
         let mut inside_thinking = false;
 
         loop {
-            // Check cancellation before processing next delta
-            if cancel_flag.load(Ordering::SeqCst) {
-                finish_generation_log(app, log_id, "cancelled", "用户取消", full_content.len());
-                // Don't emit ai-done; cancel_ai_session already emitted ai-error
-                registry.unregister(session_id);
-                return Err("cancelled".to_string());
-            }
+            let stream_result = tokio::select! {
+                _ = cancellation.cancelled() => {
+                    return finish_cancelled(
+                        app,
+                        &registry,
+                        &cancellation,
+                        session_id,
+                        log_id,
+                        full_content.len(),
+                    );
+                }
+                result = timeout(GENERATION_TIMEOUT, stream.next()) => result,
+            };
 
-            let next_result = match timeout(GENERATION_TIMEOUT, stream.next()).await {
+            let next_result = match stream_result {
                 Ok(Some(result)) => result,
-                Ok(None) => break, // stream ended normally
+                Ok(None) => break,
                 Err(_) => {
-                    let msg = "生成超时（超过 5 分钟无响应），请检查模型配置或网络连接";
-                    finish_generation_log(app, log_id, "timeout", msg, full_content.len());
-                    events::emit_error(app, session_id, msg);
+                    let message = "生成超时（超过 5 分钟无响应），请检查模型配置或网络连接";
+                    finish_generation_log(
+                        app,
+                        log_id,
+                        "timeout",
+                        message,
+                        full_content.len(),
+                    );
+                    events::emit_error(app, session_id, message);
                     registry.unregister(session_id);
-                    return Err(msg.to_string());
+                    return Err(message.to_string());
                 }
             };
 
             match next_result {
-                Ok(delta) => {
-                    match delta.delta_type {
-                        AiDeltaType::Content => {
-                            // Split <thinking> tags from content deltas
-                            let parts = split_thinking_tags(&delta.text, &mut inside_thinking);
-                            for (text, chunk_type) in parts {
-                                if chunk_type == "content" {
-                                    full_content.push_str(&text);
-                                }
-                                events::emit_chunk(app, session_id, &text, &chunk_type);
+                Ok(delta) => match delta.delta_type {
+                    AiDeltaType::Content => {
+                        for (text, chunk_type) in
+                            split_thinking_tags(&delta.text, &mut inside_thinking)
+                        {
+                            if chunk_type == "content" {
+                                full_content.push_str(&text);
                             }
+                            events::emit_chunk(app, session_id, &text, &chunk_type);
                         }
-                        AiDeltaType::Thinking | AiDeltaType::ThinkingSummary => {
-                            events::emit_chunk(app, session_id, &delta.text, "thinking");
-                        }
-                        AiDeltaType::Error => {
-                            finish_generation_log(
-                                app,
-                                log_id,
-                                "failed",
-                                &delta.text,
-                                full_content.len(),
-                            );
-                            events::emit_error(app, session_id, &delta.text);
-                            registry.unregister(session_id);
-                            return Err(delta.text);
-                        }
-                        AiDeltaType::Done => {
-                            break;
-                        }
-                        AiDeltaType::ToolCall => {
-                            // Emit tool_call event for frontend visibility
-                            events::emit_tool_call(
-                                app,
-                                session_id,
-                                &delta.text,
-                                &delta.payload,
-                            );
-                        }
-                        AiDeltaType::ToolResult => {
-                            let success = !delta.payload.is_null()
-                                && delta.payload.get("success")
-                                    .map(|v| v.as_bool().unwrap_or(true))
-                                    .unwrap_or(true);
-                            events::emit_tool_result(
-                                app,
-                                session_id,
-                                &delta.text,
-                                success,
-                                "",
-                                &delta.payload,
-                            );
-                        }
-                        AiDeltaType::SkillStart => {
-                            events::emit_skill_start(app, session_id, &delta.text);
-                        }
-                        AiDeltaType::SkillResult => {
-                            let success = delta.payload.get("success")
-                                .and_then(|v| v.as_bool())
+                    }
+                    AiDeltaType::Thinking | AiDeltaType::ThinkingSummary => {
+                        events::emit_chunk(app, session_id, &delta.text, "thinking");
+                    }
+                    AiDeltaType::Error => {
+                        finish_generation_log(
+                            app,
+                            log_id,
+                            "failed",
+                            &delta.text,
+                            full_content.len(),
+                        );
+                        events::emit_error(app, session_id, &delta.text);
+                        registry.unregister(session_id);
+                        return Err(delta.text);
+                    }
+                    AiDeltaType::Done => break,
+                    AiDeltaType::ToolCall => {
+                        events::emit_tool_call(
+                            app,
+                            session_id,
+                            &delta.text,
+                            &delta.payload,
+                        );
+                    }
+                    AiDeltaType::ToolResult => {
+                        let success = !delta.payload.is_null()
+                            && delta
+                                .payload
+                                .get("success")
+                                .map(|value| value.as_bool().unwrap_or(true))
                                 .unwrap_or(true);
-                            let error = delta.payload.get("error")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
-                            events::emit_skill_result(
+                        events::emit_tool_result(
+                            app,
+                            session_id,
+                            &delta.text,
+                            success,
+                            "",
+                            &delta.payload,
+                        );
+                    }
+                    AiDeltaType::SkillStart => {
+                        events::emit_skill_start(app, session_id, &delta.text);
+                    }
+                    AiDeltaType::SkillResult => {
+                        let success = delta
+                            .payload
+                            .get("success")
+                            .and_then(|value| value.as_bool())
+                            .unwrap_or(true);
+                        let error = delta
+                            .payload
+                            .get("error")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("");
+                        events::emit_skill_result(
+                            app,
+                            session_id,
+                            &delta.text,
+                            success,
+                            error,
+                        );
+                    }
+                    AiDeltaType::McpCall | AiDeltaType::McpResult => {
+                        let success = delta
+                            .payload
+                            .get("success")
+                            .and_then(|value| value.as_bool())
+                            .unwrap_or(matches!(delta.delta_type, AiDeltaType::McpCall));
+                        let error = delta
+                            .payload
+                            .get("error")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("");
+                        log_mcp_delta(app, session_id, &delta, success, error);
+
+                        match delta.delta_type {
+                            AiDeltaType::McpCall => events::emit_mcp_call(
+                                app,
+                                session_id,
+                                &delta.text,
+                                &delta.payload,
+                            ),
+                            AiDeltaType::McpResult => events::emit_mcp_result(
                                 app,
                                 session_id,
                                 &delta.text,
                                 success,
                                 error,
-                            );
-                        }
-                        AiDeltaType::McpCall | AiDeltaType::McpResult => {
-                            let success = delta.payload.get("success")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(matches!(delta.delta_type, AiDeltaType::McpCall));
-                            let error = delta.payload.get("error")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
-                            log_mcp_delta(app, session_id, &delta, success, error);
-                            match delta.delta_type {
-                                AiDeltaType::McpCall => {
-                                    events::emit_mcp_call(
-                                        app,
-                                        session_id,
-                                        &delta.text,
-                                        &delta.payload,
-                                    );
-                                }
-                                AiDeltaType::McpResult => {
-                                    events::emit_mcp_result(
-                                        app,
-                                        session_id,
-                                        &delta.text,
-                                        success,
-                                        error,
-                                        &delta.payload,
-                                    );
-                                }
-                                _ => {}
-                            }
+                                &delta.payload,
+                            ),
+                            _ => {}
                         }
                     }
-                }
-                Err(e) => {
-                    finish_generation_log(app, log_id, "failed", &e, full_content.len());
-                    events::emit_error(app, session_id, &e);
+                },
+                Err(error) => {
+                    finish_generation_log(
+                        app,
+                        log_id,
+                        "failed",
+                        &error,
+                        full_content.len(),
+                    );
+                    events::emit_error(app, session_id, &error);
                     registry.unregister(session_id);
-                    return Err(e);
+                    return Err(error);
                 }
             }
+        }
+
+        // Cancellation can race the stream's terminal item.
+        if cancellation.is_cancelled() {
+            return finish_cancelled(
+                app,
+                &registry,
+                &cancellation,
+                session_id,
+                log_id,
+                full_content.len(),
+            );
         }
 
         finish_generation_log(app, log_id, "success", "", full_content.len());
@@ -392,6 +440,27 @@ impl AiTaskService {
     }
 }
 
+fn finish_cancelled(
+    app: &AppHandle,
+    registry: &AiSessionRegistry,
+    cancellation: &Arc<SessionCancellation>,
+    session_id: &str,
+    log_id: i64,
+    output_chars: usize,
+) -> Result<String, String> {
+    if cancellation.is_cancelled() {
+        finish_generation_log(
+            app,
+            log_id,
+            "cancelled",
+            "用户取消",
+            output_chars,
+        );
+    }
+    registry.unregister(session_id);
+    Err("cancelled".to_string())
+}
+
 fn log_mcp_delta(
     app: &AppHandle,
     session_id: &str,
@@ -401,10 +470,12 @@ fn log_mcp_delta(
 ) {
     let state = app.state::<DbState>();
     let request = crate::ai::runtime::mcp::McpApprovalRequest {
-        project_id: delta.payload.get("project_id").and_then(|v| v.as_i64()),
+        project_id: delta.payload.get("project_id").and_then(|value| value.as_i64()),
         session_id: session_id.to_string(),
-        server_name: delta.payload.get("server_name")
-            .and_then(|v| v.as_str())
+        server_name: delta
+            .payload
+            .get("server_name")
+            .and_then(|value| value.as_str())
             .unwrap_or("runtime")
             .to_string(),
         tool_name: delta.text.clone(),
@@ -453,7 +524,8 @@ mod tests {
     #[test]
     fn split_thinking_tags_detects_complete_block() {
         let mut inside = false;
-        let parts = split_thinking_tags("before<thinking>secret</thinking>after", &mut inside);
+        let parts =
+            split_thinking_tags("before<thinking>secret</thinking>after", &mut inside);
         assert_eq!(parts.len(), 3);
         assert_eq!(parts[0], ("before".to_string(), "content".to_string()));
         assert_eq!(parts[1], ("secret".to_string(), "thinking".to_string()));
@@ -464,16 +536,16 @@ mod tests {
     #[test]
     fn split_thinking_tags_handles_cross_boundary() {
         let mut inside = false;
-        let parts1 = split_thinking_tags("text<thinking>partial", &mut inside);
-        assert_eq!(parts1.len(), 2);
-        assert_eq!(parts1[0], ("text".to_string(), "content".to_string()));
-        assert_eq!(parts1[1], ("partial".to_string(), "thinking".to_string()));
+        let first = split_thinking_tags("text<thinking>partial", &mut inside);
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0], ("text".to_string(), "content".to_string()));
+        assert_eq!(first[1], ("partial".to_string(), "thinking".to_string()));
         assert!(inside);
 
-        let parts2 = split_thinking_tags("rest</thinking>end", &mut inside);
-        assert_eq!(parts2.len(), 2);
-        assert_eq!(parts2[0], ("rest".to_string(), "thinking".to_string()));
-        assert_eq!(parts2[1], ("end".to_string(), "content".to_string()));
+        let second = split_thinking_tags("rest</thinking>end", &mut inside);
+        assert_eq!(second.len(), 2);
+        assert_eq!(second[0], ("rest".to_string(), "thinking".to_string()));
+        assert_eq!(second[1], ("end".to_string(), "content".to_string()));
         assert!(!inside);
     }
 }
